@@ -1,0 +1,340 @@
+name: Release (Windows + Linux + macOS)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 + MinGW gcc
+        id: setup-msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-raylib
+            mingw-w64-x86_64-glfw
+            make
+            zip
+
+      - name: Vendorizar raylib para Windows
+        run: |
+          mkdir -p libs/raylib/windows/include libs/raylib/windows/lib
+          cp /mingw64/include/raylib.h libs/raylib/windows/include/raylib.h
+          cp /mingw64/lib/libraylib.a  libs/raylib/windows/lib/libraylib.a
+
+      - name: Compilar altairc.exe y altair-terminal.exe
+        run: |
+          make clean || true
+          make CC=gcc
+          mv altairc altairc.exe 2>/dev/null || true
+
+          echo "=== Compilando altair-terminal.exe ==="
+          gcc -O2 -municode src/altair-terminal.c -o altair-terminal.exe -lkernel32 -lshell32 -lole32
+
+          echo "=== Archivos .exe generados ==="
+          ls -la *.exe
+
+      - name: Test rápido
+        run: |
+          ./altairc.exe examples/hello.at -o /tmp/altair_hello.exe
+          /tmp/altair_hello.exe
+
+      - name: Test gráficos raylib
+        run: |
+          ./altairc.exe test/paint.at -o /tmp/altair_paint.exe
+
+      - name: Instalar NSIS y copiar mingw64 completo
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $env:Path = "$env:Path;C:\Program Files (x86)\NSIS"
+
+          # === DETECCIÓN DE RUTA MSYS2 ===
+          $msys2Root = "${{ steps.setup-msys2.outputs.msys2-location }}"
+          if ([string]::IsNullOrEmpty($msys2Root)) {
+            $msys2Root = $env:MSYS2_PATH
+          }
+          if ([string]::IsNullOrEmpty($msys2Root)) {
+            $msys2Root = "C:\msys64"
+          }
+
+          Write-Host "🔍 MSYS2 root detectado: $msys2Root"
+
+          # Buscar la carpeta correcta (mingw64, ucrt64, etc.)
+          $mingwPath = "$msys2Root\mingw64"
+          if (-not (Test-Path "$mingwPath\bin\gcc.exe")) {
+            $mingwPath = "$msys2Root\ucrt64"
+          }
+          if (-not (Test-Path "$mingwPath\bin\gcc.exe")) {
+            $mingwPath = "$msys2Root\clang64"
+          }
+
+          if (Test-Path "$mingwPath\bin\gcc.exe") {
+            Write-Host "✅ Encontrado gcc.exe en: $mingwPath"
+            Write-Host "📦 Copiando mingw64 completo (esto puede tardar)..."
+            Copy-Item "$mingwPath" -Destination "." -Recurse -Force -ErrorAction Stop
+            Write-Host "✅ mingw64 copiado correctamente"
+          } else {
+            Write-Host "❌ ERROR: No se encontró carpeta mingw válida con gcc.exe"
+            exit 1
+          }
+
+          # === VERIFICACIÓN DE MINGW64 ===
+          Write-Host "🔍 Verificando mingw64..."
+          if (Test-Path "mingw64\bin\gcc.exe") {
+            Write-Host "✅ gcc.exe encontrado en mingw64\bin\"
+            $gccVersion = & mingw64\bin\gcc.exe --version | Select-Object -First 1
+            Write-Host "   Versión: $gccVersion"
+            
+            $files = Get-ChildItem mingw64\bin\*.exe | Measure-Object
+            Write-Host "   Total de .exe en bin: $($files.Count)"
+            
+            if ($files.Count -lt 50) {
+              Write-Host "⚠️  ADVERTENCIA: Pocos archivos en bin ($($files.Count))"
+            }
+          } else {
+            Write-Host "❌ ERROR: No se encuentra mingw64\bin\gcc.exe después de copiar"
+            exit 1
+          }
+
+          # === VERIFICAR altair-terminal.exe ===
+          Write-Host "🔍 Buscando altair-terminal.exe..."
+          if (Test-Path "src\altair-terminal.exe") {
+            Copy-Item "src\altair-terminal.exe" -Destination "." -Force
+          }
+          if (-not (Test-Path "altair-terminal.exe")) {
+            Write-Host "❌ ERROR: No se encontró altair-terminal.exe"
+            exit 1
+          }
+          Write-Host "✅ altair-terminal.exe listo"
+
+          # === GENERAR INSTALADOR ===
+          Write-Host "🔧 Generando instalador con NSIS..."
+          makensis instalador.nsi
+
+      - name: Preparar carpeta de distribución
+        shell: pwsh
+        run: |
+          $VERSION = "1.6.5vC"
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          Copy-Item altairc.exe "dist/" -ErrorAction SilentlyContinue
+          Copy-Item altair-terminal.exe "dist/" -ErrorAction SilentlyContinue
+          Copy-Item ALTAIR_GUIDE.md,GUIA_USUARIO.md,README.md "dist/" -ErrorAction SilentlyContinue
+          Copy-Item examples "dist/" -Recurse -ErrorAction SilentlyContinue
+          Copy-Item test "dist/" -Recurse -ErrorAction SilentlyContinue
+          Copy-Item libs "dist/" -Recurse -ErrorAction SilentlyContinue
+          Copy-Item mingw64 "dist/" -Recurse -ErrorAction SilentlyContinue
+          Compress-Archive -Path "dist/*" -DestinationPath "dist/altair-windows-$VERSION.zip"
+          Get-ChildItem *.exe | Where-Object { $_.Name -like "Altair-Setup*" } | Move-Item -Destination "dist/" -ErrorAction SilentlyContinue
+          echo "VERSION=$VERSION" >> $env:GITHUB_ENV
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: altair-windows-${{ env.VERSION }}
+          path: |
+            dist/altair-windows-${{ env.VERSION }}.zip
+            dist/Altair-Setup*.exe
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compilar e instalar raylib
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev
+          git clone --depth 1 https://github.com/raysan5/raylib.git /tmp/raylib
+          cd /tmp/raylib/src
+          make PLATFORM=PLATFORM_DESKTOP
+          mkdir -p "$GITHUB_WORKSPACE/libs/raylib/linux/include" "$GITHUB_WORKSPACE/libs/raylib/linux/lib"
+          cp raylib.h "$GITHUB_WORKSPACE/libs/raylib/linux/include/raylib.h"
+          cp libraylib.a "$GITHUB_WORKSPACE/libs/raylib/linux/lib/libraylib.a"
+
+      - name: Compilar con make
+        run: |
+          make clean || true
+          make
+
+      - name: Test rápido
+        run: |
+          ./altairc examples/hello.at -o /tmp/altair_hello
+          /tmp/altair_hello
+
+      - name: Test gráficos raylib
+        run: |
+          ./altairc test/paint.at -o /tmp/altair_paint
+
+      - name: Preparar carpeta de distribución
+        run: |
+          VERSION="1.6.5vC"
+          DIST="dist/altair-linux-${VERSION}"
+          mkdir -p "$DIST"
+          cp altairc "$DIST/"
+          cp ALTAIR_GUIDE.md GUIA_USUARIO.md README.md "$DIST/"
+          cp -r examples "$DIST/"
+          cp -r test "$DIST/"
+          mkdir -p "$DIST/libs/raylib"
+          cp -r libs/raylib/linux "$DIST/libs/raylib/"
+          cd dist
+          tar -czf "altair-linux-${VERSION}.tar.gz" "altair-linux-${VERSION}"
+          cd ..
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Construir paquete .deb
+        run: |
+          DEBVER="1.6.5"
+          PKGDIR="debpkg/altair_${DEBVER}_amd64"
+          mkdir -p "$PKGDIR/DEBIAN"
+          mkdir -p "$PKGDIR/usr/local/bin"
+          mkdir -p "$PKGDIR/usr/local/share/altair"
+          cp altairc "$PKGDIR/usr/local/bin/altairc"
+          chmod 755 "$PKGDIR/usr/local/bin/altairc"
+          cp ALTAIR_GUIDE.md GUIA_USUARIO.md README.md "$PKGDIR/usr/local/share/altair/"
+          cp -r examples "$PKGDIR/usr/local/share/altair/"
+          cp -r test "$PKGDIR/usr/local/share/altair/"
+          mkdir -p "$PKGDIR/usr/local/share/altair/libs/raylib"
+          cp -r libs/raylib/linux "$PKGDIR/usr/local/share/altair/libs/raylib/"
+          cat > "$PKGDIR/DEBIAN/control" <<EOF
+          Package: altair
+          Version: ${DEBVER}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: victios7
+          Description: Altair Language Compiler
+           Compilador del lenguaje Altair, un lenguaje de nivel medio
+           compilado a C con control explicito de storage.
+          EOF
+          dpkg-deb --build --root-owner-group "$PKGDIR" "dist/altair_${DEBVER}_amd64.deb"
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: altair-linux-${{ env.VERSION }}
+          path: |
+            dist/altair-linux-${{ env.VERSION }}.tar.gz
+            dist/altair_*_amd64.deb
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar raylib
+        run: |
+          brew install raylib
+          mkdir -p libs/raylib/macos/include libs/raylib/macos/lib
+          cp "$(brew --prefix raylib)/include/raylib.h" libs/raylib/macos/include/raylib.h
+          cp "$(brew --prefix raylib)/lib/libraylib.a"  libs/raylib/macos/lib/libraylib.a
+
+      - name: Compilar con make
+        run: |
+          make clean || true
+          make
+
+      - name: Test rápido
+        run: |
+          ./altairc examples/hello.at -o /tmp/altair_hello
+          /tmp/altair_hello
+
+      - name: Test gráficos raylib
+        run: |
+          ./altairc test/paint.at -o /tmp/altair_paint
+
+      - name: Preparar carpeta de distribución
+        run: |
+          VERSION="1.6.5vC"
+          DIST="dist/altair-macos-${VERSION}"
+          mkdir -p "$DIST"
+          cp altairc "$DIST/"
+          cp ALTAIR_GUIDE.md GUIA_USUARIO.md README.md "$DIST/"
+          cp -r examples "$DIST/"
+          cp -r test "$DIST/"
+          mkdir -p "$DIST/libs/raylib"
+          cp -r libs/raylib/macos "$DIST/libs/raylib/"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Empaquetar .tar.gz
+        run: |
+          cd dist
+          tar -czf "altair-macos-${VERSION}.tar.gz" "altair-macos-${VERSION}"
+
+      - name: Construir instalador .pkg
+        run: |
+          PKGROOT="pkgroot"
+          mkdir -p "$PKGROOT/usr/local/bin"
+          cp altairc "$PKGROOT/usr/local/bin/altairc"
+          chmod 755 "$PKGROOT/usr/local/bin/altairc"
+          mkdir -p "$PKGROOT/usr/local/share/altair/libs/raylib"
+          cp -r libs/raylib/macos "$PKGROOT/usr/local/share/altair/libs/raylib/"
+          pkgbuild \
+            --root "$PKGROOT" \
+            --identifier com.altair.compiler \
+            --version "${VERSION}" \
+            --install-location "/" \
+            "dist/Altair-Setup-${VERSION}.pkg"
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: altair-macos-${{ env.VERSION }}
+          path: |
+            dist/altair-macos-${{ env.VERSION }}.tar.gz
+            dist/Altair-Setup-${{ env.VERSION }}.pkg
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar todos los artefactos
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Ver estructura descargada
+        run: |
+          echo "📂 Estructura de artifacts:"
+          find artifacts -type f
+          echo "📊 Archivos encontrados:"
+          find artifacts -type f | wc -l
+
+      - name: Publicar Release con los 3 instaladores
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.exe
+            artifacts/**/*.tar.gz
+            artifacts/**/*.deb
+            artifacts/**/*.pkg
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          token: ${{ secrets.GITHUB_TOKEN }}
