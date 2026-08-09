@@ -1,6 +1,6 @@
 # Altair Language v1.7
 
-#este repositorio no es el oficial, solo el código fuente
+# este repositorio no es el oficial, solo el código fuente
 
 > "Memory has a place."
 
