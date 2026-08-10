@@ -1,91 +1,223 @@
-windows-exe:
-  runs-on: windows-latest
-  defaults:
-    run:
-      shell: msys2 {0}
-  steps:
-    - uses: actions/checkout@v4
-    - uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-x86_64-gcc
-          mingw-w64-x86_64-make
-          mingw-w64-x86_64-nsis
-          zip
+name: build
 
-    - name: Compilar altairc.exe
-      run: |
-        gcc -O3 -flto -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
-            -DALTAIR_RT_H=\"$(cygpath -m "$(pwd)/runtime/altair_rt.h")\" \
-            -DALTAIR_RT_C=\"$(cygpath -m "$(pwd)/runtime/altair_rt.c")\" \
-            -Isrc -o altairc.exe \
-            src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c -lm
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-    - name: Compilar altair-terminal.exe
-      run: |
-        gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # LINUX - .deb
+  # ──────────────────────────────────────────────────────────────
+  linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Copiar mingw64 esencial
-      run: |
-        # Buscar la ruta real de mingw64
-        if [ -d "/mingw64" ]; then
-          MINGW="/mingw64"
-        elif [ -d "/ucrt64" ]; then
-          MINGW="/ucrt64"
-        elif [ -d "/clang64" ]; then
-          MINGW="/clang64"
-        else
-          echo "❌ ERROR: No se encontró mingw64"
-          exit 1
-        fi
-        
-        echo "✅ Usando MINGW=$MINGW"
-        
-        mkdir -p mingw64/bin mingw64/lib mingw64/include mingw64/libexec/gcc/x86_64-w64-mingw32
-        
-        # Binarios esenciales
-        cp "$MINGW/bin/gcc.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ gcc.exe no encontrado"
-        cp "$MINGW/bin/ld.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ld.exe no encontrado"
-        cp "$MINGW/bin/as.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ as.exe no encontrado"
-        cp "$MINGW/bin/ar.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ar.exe no encontrado"
-        cp "$MINGW/bin/ranlib.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ranlib.exe no encontrado"
-        cp "$MINGW/bin/libgcc_s_seh-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libgcc_s_seh-1.dll no encontrado"
-        cp "$MINGW/bin/libwinpthread-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libwinpthread-1.dll no encontrado"
-        cp "$MINGW/bin/libstdc++-6.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libstdc++-6.dll no encontrado"
-        
-        # Librerías
-        find "$MINGW/lib" -maxdepth 1 -name "libgcc*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        find "$MINGW/lib" -maxdepth 1 -name "libmingw*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        find "$MINGW/lib" -maxdepth 1 -name "libmsvcrt*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        find "$MINGW/lib" -maxdepth 1 -name "libkernel32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        find "$MINGW/lib" -maxdepth 1 -name "libuser32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        find "$MINGW/lib" -maxdepth 1 -name "libwinpthread*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-        
-        # Headers
-        cp -r "$MINGW/include"/* mingw64/include/ 2>/dev/null || true
-        
-        # Libexec (cc1.exe es CRUCIAL)
-        GCC_VER=$(ls "$MINGW/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1)
-        if [ -n "$GCC_VER" ]; then
-          mkdir -p "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER"
-          cp "$MINGW/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/cc1.exe" \
-             "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/" 2>/dev/null || true
-        fi
-        
-        # Verificar
-        if [ -f "mingw64/bin/gcc.exe" ]; then
-          echo "✅ mingw64/bin/gcc.exe encontrado"
-        else
-          echo "❌ ERROR: No se encontró mingw64/bin/gcc.exe"
-          exit 1
-        fi
-        
-        echo "📦 Tamaño de mingw64:"
-        du -sh mingw64
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
 
-    - name: Generar instalador
-      run: makensis instalador.nsi
+      - name: Compilar altairc
+        run: |
+          make clean || true
+          make
 
-    - uses: actions/upload-artifact@v4
+      - name: Crear paquete .deb
+        run: |
+          VERSION="1.7.5vB"
+          PKGDIR="altair_${VERSION}_amd64"
+          mkdir -p "$PKGDIR/DEBIAN"
+          mkdir -p "$PKGDIR/usr/local/bin"
+          mkdir -p "$PKGDIR/usr/local/share/altair"
+
+          cp altairc "$PKGDIR/usr/local/bin/altairc"
+          chmod 755 "$PKGDIR/usr/local/bin/altairc"
+
+          cp -r runtime "$PKGDIR/usr/local/share/altair/"
+          cp -r examples "$PKGDIR/usr/local/share/altair/"
+          cp ALTAIR_LOGO.ico "$PKGDIR/usr/local/share/altair/"
+
+          cat > "$PKGDIR/DEBIAN/control" <<EOF
+          Package: altair
+          Version: ${VERSION}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: victios7
+          Description: Altair Language Compiler
+           Compilador del lenguaje Altair v${VERSION}
+          EOF
+
+          dpkg-deb --build --root-owner-group "$PKGDIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-linux-deb
+          path: altair_*.deb
+
+  # ──────────────────────────────────────────────────────────────
+  # MACOS - .pkg
+  # ──────────────────────────────────────────────────────────────
+  macos-pkg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar altairc
+        run: |
+          make clean || true
+          make
+
+      - name: Crear .pkg
+        run: |
+          VERSION="1.7.5vB"
+          PKGROOT="pkgroot"
+          mkdir -p "$PKGROOT/usr/local/bin"
+          mkdir -p "$PKGROOT/usr/local/share/altair"
+
+          cp altairc "$PKGROOT/usr/local/bin/altairc"
+          chmod 755 "$PKGROOT/usr/local/bin/altairc"
+
+          cp -r runtime "$PKGROOT/usr/local/share/altair/"
+          cp -r examples "$PKGROOT/usr/local/share/altair/"
+          cp ALTAIR_LOGO.ico "$PKGROOT/usr/local/share/altair/"
+
+          pkgbuild \
+            --root "$PKGROOT" \
+            --identifier com.altair.compiler \
+            --version "${VERSION}" \
+            --install-location "/" \
+            "Altair-Setup-${VERSION}.pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-macos-pkg
+          path: Altair-Setup-*.pkg
+
+  # ──────────────────────────────────────────────────────────────
+  # WINDOWS - .exe (con mingw64 esencial)
+  # ──────────────────────────────────────────────────────────────
+  windows-exe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-nsis
+            zip
+
+      - name: Compilar altairc.exe
+        run: |
+          gcc -O3 -flto -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
+              -DALTAIR_RT_H=\"$(cygpath -m "$(pwd)/runtime/altair_rt.h")\" \
+              -DALTAIR_RT_C=\"$(cygpath -m "$(pwd)/runtime/altair_rt.c")\" \
+              -Isrc -o altairc.exe \
+              src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c -lm
+
+      - name: Compilar altair-terminal.exe
+        run: |
+          gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
+
+      - name: Copiar mingw64 esencial (solo C)
+        run: |
+          # Buscar la ruta real de mingw64
+          if [ -d "/mingw64" ]; then
+            MINGW="/mingw64"
+          elif [ -d "/ucrt64" ]; then
+            MINGW="/ucrt64"
+          elif [ -d "/clang64" ]; then
+            MINGW="/clang64"
+          else
+            echo "❌ ERROR: No se encontró mingw64"
+            exit 1
+          fi
+
+          echo "✅ Usando MINGW=$MINGW"
+
+          mkdir -p mingw64/bin mingw64/lib mingw64/include mingw64/libexec/gcc/x86_64-w64-mingw32
+
+          # Binarios esenciales
+          cp "$MINGW/bin/gcc.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ gcc.exe no encontrado"
+          cp "$MINGW/bin/ld.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ld.exe no encontrado"
+          cp "$MINGW/bin/as.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ as.exe no encontrado"
+          cp "$MINGW/bin/ar.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ar.exe no encontrado"
+          cp "$MINGW/bin/ranlib.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ranlib.exe no encontrado"
+          cp "$MINGW/bin/libgcc_s_seh-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libgcc_s_seh-1.dll no encontrado"
+          cp "$MINGW/bin/libwinpthread-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libwinpthread-1.dll no encontrado"
+          cp "$MINGW/bin/libstdc++-6.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libstdc++-6.dll no encontrado"
+
+          # Librerías (usando find para encontrarlas)
+          find "$MINGW/lib" -maxdepth 1 -name "libgcc*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+          find "$MINGW/lib" -maxdepth 1 -name "libmingw*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+          find "$MINGW/lib" -maxdepth 1 -name "libmsvcrt*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+          find "$MINGW/lib" -maxdepth 1 -name "libkernel32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+          find "$MINGW/lib" -maxdepth 1 -name "libuser32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+          find "$MINGW/lib" -maxdepth 1 -name "libwinpthread*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
+
+          # Headers
+          cp -r "$MINGW/include"/* mingw64/include/ 2>/dev/null || true
+
+          # Libexec (cc1.exe es CRUCIAL para compilar)
+          GCC_VER=$(ls "$MINGW/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1)
+          if [ -n "$GCC_VER" ]; then
+            mkdir -p "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER"
+            cp "$MINGW/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/cc1.exe" \
+               "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/" 2>/dev/null || true
+          fi
+
+          # Verificar que gcc.exe existe
+          if [ -f "mingw64/bin/gcc.exe" ]; then
+            echo "✅ mingw64/bin/gcc.exe encontrado"
+          else
+            echo "❌ ERROR: No se encontró mingw64/bin/gcc.exe"
+            exit 1
+          fi
+
+          # Mostrar tamaño
+          du -sh mingw64
+
+      - name: Generar instalador NSIS
+        run: makensis instalador.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-windows-exe
+          path: Altair-Setup-*.exe
+
+  # ──────────────────────────────────────────────────────────────
+  # RELEASE - Publicar todo
+  # ──────────────────────────────────────────────────────────────
+  release:
+    needs: [linux-deb, macos-pkg, windows-exe]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Listar artefactos
+        run: |
+          echo "📦 Artefactos descargados:"
+          find artifacts -type f -exec ls -lh {} \;
+
+      - name: Publicar release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.pkg
+            artifacts/**/*.exe
+          generate_release_notes: true
