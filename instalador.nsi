@@ -11,9 +11,7 @@ InstallDir "$PROGRAMFILES64\Altair"
 RequestExecutionLevel admin
 ShowInstDetails show
 
-; ======================================================
-; COMPRESIÓN ESTABLE (zlib, sin problemas de memoria)
-; ======================================================
+
 SetCompressor lzma
 SetCompressorDictSize 64
 
@@ -57,13 +55,13 @@ Section "Altair Compiler"
     File /r "mingw64\bin\*.dll"
     
     ; 2. Librerías estáticas y objetos (todo lib/*, sin C++)
-    File /x "libstdc++*" /x "*c++*" /r "mingw64\lib\*.*"
+    File /r /x "libstdc++*" /x "*c++*" "mingw64\lib\*.*"
     
     ; 3. Headers (solo C, sin C++)
-    File /x "c++" /r "mingw64\include\*.*"
+    File /r /x "c++" "mingw64\include\*.*"
     
     ; 4. Herramientas internas de gcc (libexec, sin cc1plus/lto1)
-    File /nonfatal /x "cc1plus.exe" /x "lto1.exe" /r "mingw64\libexec\*.*"
+    File /nonfatal /r /x "cc1plus.exe" /x "lto1.exe" "mingw64\libexec\*.*"
     
     ; 5. Directorio mingw64/x86_64-w64-mingw32 (si existe)
     File /nonfatal /r "mingw64\x86_64-w64-mingw32\*.*"
