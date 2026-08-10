@@ -68,7 +68,7 @@ jobs:
               src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c -lm
       - name: Build terminal
         run: |
-          gcc -O3 -std=c11 -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
+          gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
       - name: Stage installer tree
         run: |
           mkdir -p mingw64
