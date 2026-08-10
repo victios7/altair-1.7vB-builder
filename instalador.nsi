@@ -12,10 +12,9 @@ RequestExecutionLevel admin
 ShowInstDetails show
 
 ; ======================================================
-; COMPRESIÓN ZLIB (RÁPIDO, NO SE CUELGA)
+; COMPRESIÓN ZLIB (RÁPIDO)
 ; ======================================================
 SetCompressor /SOLID zlib
-; Sin SetCompressorDictSize
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "ALTAIR_LOGO.ico"
@@ -48,16 +47,14 @@ Section "Altair Compiler"
     File /r "examples\*.*"
     
     ; ======================================================
-    ; MINGW64 - COPIA COMPLETA (con zlib es RÁPIDO)
+    ; MINGW64 - COPIA EXCLUYENDO share/, doc/, man/, info/
     ; ======================================================
     SetOutPath "$INSTDIR\mingw64"
-    File /r "mingw64\*.*"
     
-    ; Eliminar carpetas innecesarias para reducir tamaño
-    RMDir /r "$INSTDIR\mingw64\share"
-    RMDir /r "$INSTDIR\mingw64\doc"
-    RMDir /r "$INSTDIR\mingw64\man"
-    RMDir /r "$INSTDIR\mingw64\info"
+    ; Copiar todo EXCEPTO share/, doc/, man/, info/
+    File /r /x "share" /x "doc" /x "man" /x "info" "mingw64\*.*"
+    
+    ; NOTA: share/ NO se copia, así que no hay que borrarlo después
     
     ; ======================================================
     ; CONFIGURAR PATH
