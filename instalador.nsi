@@ -2,7 +2,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !define APPNAME    "Altair"
-!define APPVERSION "1.6.5vC"
+!define APPVERSION "1.7.5vB"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Altair"
 
 Name "Altair Language ${APPVERSION}"
@@ -14,8 +14,8 @@ ShowInstDetails show
 ; ======================================================
 ; COMPRESIÓN ESTABLE (zlib, sin problemas de memoria)
 ; ======================================================
-SetCompressor /SOLID zlib
-SetCompressorDictSize 32
+SetCompressor lzma
+SetCompressorDictSize 64
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "ALTAIR_LOGO.ico"
@@ -56,14 +56,14 @@ Section "Altair Compiler"
     File /r "mingw64\bin\*.exe"
     File /r "mingw64\bin\*.dll"
     
-    ; 2. Librerías estáticas y objetos (todo lib/*)
-    File /r "mingw64\lib\*.*"
+    ; 2. Librerías estáticas y objetos (todo lib/*, sin C++)
+    File /x "libstdc++*" /x "*c++*" /r "mingw64\lib\*.*"
     
-    ; 3. Headers (todo include/*)
-    File /r "mingw64\include\*.*"
+    ; 3. Headers (solo C, sin C++)
+    File /x "c++" /r "mingw64\include\*.*"
     
-    ; 4. Herramientas internas de gcc (libexec)
-    File /nonfatal /r "mingw64\libexec\*.*"
+    ; 4. Herramientas internas de gcc (libexec, sin cc1plus/lto1)
+    File /nonfatal /x "cc1plus.exe" /x "lto1.exe" /r "mingw64\libexec\*.*"
     
     ; 5. Directorio mingw64/x86_64-w64-mingw32 (si existe)
     File /nonfatal /r "mingw64\x86_64-w64-mingw32\*.*"
