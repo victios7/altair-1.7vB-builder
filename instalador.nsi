@@ -12,7 +12,7 @@ RequestExecutionLevel admin
 ShowInstDetails show
 
 ; ======================================================
-; COMPRESIÓN ZLIB (RÁPIDO)
+; COMPRESIÓN NORMAL (para archivos pequeños)
 ; ======================================================
 SetCompressor /SOLID zlib
 
@@ -33,7 +33,7 @@ SetCompressor /SOLID zlib
 Section "Altair Compiler"
     SetOutPath "$INSTDIR"
     
-    ; Archivos principales
+    ; Archivos principales (comprimidos)
     File "altairc.exe"
     File "altair-terminal.exe"
     File "ALTAIR_LOGO.ico"
@@ -47,14 +47,14 @@ Section "Altair Compiler"
     File /r "examples\*.*"
     
     ; ======================================================
-    ; MINGW64 - COPIA EXCLUYENDO share/, doc/, man/, info/
+    ; MINGW64 - SIN COMPRESIÓN (INSTALACIÓN INSTANTÁNEA)
     ; ======================================================
     SetOutPath "$INSTDIR\mingw64"
     
-    ; Copiar todo EXCEPTO share/, doc/, man/, info/
+    ; Desactivar compresión para mingw64
+    SetCompress off
     File /r /x "share" /x "doc" /x "man" /x "info" "mingw64\*.*"
-    
-    ; NOTA: share/ NO se copia, así que no hay que borrarlo después
+    SetCompress auto  ; Volver a compresión normal
     
     ; ======================================================
     ; CONFIGURAR PATH
