@@ -47,15 +47,39 @@ Section "Altair Compiler"
     File /r "examples\*.*"
     
     ; ======================================================
-    ; MINGW64 - SIN COMPRESIÓN (INSTALACIÓN INSTANTÁNEA)
+    ; MINGW64 - INCLUSIÓN REDUCIDA (solo lo necesario: bin y DLLs)
+    ; Para evitar que el instalador sea enorme y que la extracción se
+    ; quede bloqueada por antivirus o long-paths, NO incluimos todo
+    ; el árbol mingw64 por defecto. Para incluirlo, definir la macro
+    ; INCLUDE_MINGW al invocar makensis: makensis -DINCLUDE_MINGW instalador.nsi
     ; ======================================================
+
+!ifdef INCLUDE_MINGW
+    ; Informar en detalles que vamos a instalar mingw (aparece en la UI)
+    DetailPrint "Instalando componente mingw64 (solo bin y DLLs)..."
+
+    ; Establecemos el directorio base para mingw
     SetOutPath "$INSTDIR\mingw64"
-    
-    ; Desactivar compresión para mingw64
+
+    ; Desactivar compresión para evitar procesamiento extra
     SetCompress off
-    File /r /x "share" /x "doc" /x "man" /x "info" "mingw64\*.*"
-    SetCompress auto  ; Volver a compresión normal
-    
+
+    ; Copiar ejecutables y utilidades desde bin
+    SetOutPath "$INSTDIR\mingw64\bin"
+    File /r "mingw64\bin\*.*"
+
+    ; Copiar solamente DLLs desde lib (evita headers, doc, etc.)
+    SetOutPath "$INSTDIR\mingw64\lib"
+    File /r "mingw64\lib\*.dll"
+
+    ; Volver a compresión automática para el resto
+    SetCompress auto
+
+    DetailPrint "mingw64 instalado (bin y DLLs)."
+!else
+    DetailPrint "NO se incluirá mingw64 en este instalador (INCLUDE_MINGW no definido)."
+!endif
+
     ; ======================================================
     ; CONFIGURAR PATH
     ; ======================================================
@@ -87,34 +111,32 @@ Section "Altair Compiler"
     WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 
+; ------------------------------------------------------
+; Subrutina PathContains: comprueba si una ruta está en PATH
+; Entrada: [top] = búsqueda (ruta a añadir)  [next] = PATH actual
+; Salida: pop $R0 = 1 si ya contiene, 0 si no
+; ------------------------------------------------------
 Function PathContains
-    Exch $0
-    Exch
-    Exch $1
-    Push $2
-    Push $3
-    
-    StrCpy $2 0
-    StrLen $3 $1
-    
-    ${Do}
-        StrCpy $2 $0 $3 $2
-        ${If} $2 == ""
-            ${Break}
-        ${EndIf}
-        
-        ${If} $2 == $1
-            StrCpy $3 1
-            ${Break}
-        ${EndIf}
-        
-        IntOp $2 $2 + 1
-    ${Loop}
-    
-    Pop $3
-    Pop $2
-    Pop $1
-    Exch $0
+  Exch $R0 ; PATH actual
+  Exch
+  Exch $R1 ; ruta a buscar
+  Push $R2
+  Push $R3
+
+  StrCpy $R2 "0"
+  ; Convertimos a minúsculas para comparación más robusta
+  StrLower $R0 $R0
+  StrLower $R1 $R1
+
+  ; Buscamos la ruta dentro de PATH
+  ClearErrors
+  StrStr $R0 $R1 $R3
+  IfErrors 0 +2
+    StrCpy $R2 "1"
+
+  Pop $R3
+  Pop $R2
+  Exch
 FunctionEnd
 
 Section "Uninstall"
