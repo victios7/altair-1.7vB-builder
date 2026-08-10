@@ -11,9 +11,11 @@ InstallDir "$PROGRAMFILES64\Altair"
 RequestExecutionLevel admin
 ShowInstDetails show
 
-
-SetCompressor lzma
-SetCompressorDictSize 64
+; ======================================================
+; COMPRESIÓN ZLIB (RÁPIDO, NO SE CUELGA)
+; ======================================================
+SetCompressor /SOLID zlib
+; Sin SetCompressorDictSize
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "ALTAIR_LOGO.ico"
@@ -41,38 +43,24 @@ Section "Altair Compiler"
     SetOutPath "$INSTDIR\runtime"
     File /r "runtime\*.*"
     
-    ; Ejemplos (opcional, pero útil)
+    ; Ejemplos
     SetOutPath "$INSTDIR\examples"
     File /r "examples\*.*"
     
     ; ======================================================
-    ; MINGW64 - SOLO LO ESENCIAL (sin doc, share, etc.)
+    ; MINGW64 - COPIA COMPLETA (con zlib es RÁPIDO)
     ; ======================================================
     SetOutPath "$INSTDIR\mingw64"
+    File /r "mingw64\*.*"
     
-    ; 1. Binarios ejecutables (gcc, g++, ld, etc.)
-    File /r "mingw64\bin\*.exe"
-    File /r "mingw64\bin\*.dll"
-    
-    ; 2. Librerías estáticas y objetos (todo lib/*, sin C++)
-    File /r /x "libstdc++*" /x "*c++*" "mingw64\lib\*.*"
-    
-    ; 3. Headers (solo C, sin C++)
-    File /r /x "c++" "mingw64\include\*.*"
-    
-    ; 4. Herramientas internas de gcc (libexec, sin cc1plus/lto1)
-    File /nonfatal /r /x "cc1plus.exe" /x "lto1.exe" "mingw64\libexec\*.*"
-    
-    ; 5. Directorio mingw64/x86_64-w64-mingw32 (si existe)
-    File /nonfatal /r "mingw64\x86_64-w64-mingw32\*.*"
-    
-    ; 6. Directorio mingw64/mingw64 (si existe)
-    File /nonfatal /r "mingw64\mingw64\*.*"
-    
-    ; EXPLÍCITAMENTE NO COPIAMOS: share/, doc/, man/, info/, etc.
+    ; Eliminar carpetas innecesarias para reducir tamaño
+    RMDir /r "$INSTDIR\mingw64\share"
+    RMDir /r "$INSTDIR\mingw64\doc"
+    RMDir /r "$INSTDIR\mingw64\man"
+    RMDir /r "$INSTDIR\mingw64\info"
     
     ; ======================================================
-    ; CONFIGURAR PATH (evitar duplicados)
+    ; CONFIGURAR PATH
     ; ======================================================
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
     
