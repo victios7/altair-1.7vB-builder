@@ -2,13 +2,10 @@ name: build
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # LINUX - .deb
-  # ──────────────────────────────────────────────────────────────
   linux-deb:
     runs-on: ubuntu-latest
     steps:
@@ -57,9 +54,6 @@ jobs:
           name: altair-linux-deb
           path: altair_*.deb
 
-  # ──────────────────────────────────────────────────────────────
-  # MACOS - .pkg
-  # ──────────────────────────────────────────────────────────────
   macos-pkg:
     runs-on: macos-latest
     steps:
@@ -96,9 +90,6 @@ jobs:
           name: altair-macos-pkg
           path: Altair-Setup-*.pkg
 
-  # ──────────────────────────────────────────────────────────────
-  # WINDOWS - .exe (con mingw64 esencial)
-  # ──────────────────────────────────────────────────────────────
   windows-exe:
     runs-on: windows-latest
     defaults:
@@ -129,9 +120,8 @@ jobs:
         run: |
           gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
 
-      - name: Copiar mingw64 esencial (solo C)
+      - name: Copiar mingw64 completo
         run: |
-          # Buscar la ruta real de mingw64
           if [ -d "/mingw64" ]; then
             MINGW="/mingw64"
           elif [ -d "/ucrt64" ]; then
@@ -144,50 +134,19 @@ jobs:
           fi
 
           echo "✅ Usando MINGW=$MINGW"
+          echo "📦 Copiando mingw64 completo..."
+          cp -r "$MINGW" mingw64
 
-          mkdir -p mingw64/bin mingw64/lib mingw64/include mingw64/libexec/gcc/x86_64-w64-mingw32
-
-          # Binarios esenciales
-          cp "$MINGW/bin/gcc.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ gcc.exe no encontrado"
-          cp "$MINGW/bin/ld.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ld.exe no encontrado"
-          cp "$MINGW/bin/as.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ as.exe no encontrado"
-          cp "$MINGW/bin/ar.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ar.exe no encontrado"
-          cp "$MINGW/bin/ranlib.exe" mingw64/bin/ 2>/dev/null || echo "⚠️ ranlib.exe no encontrado"
-          cp "$MINGW/bin/libgcc_s_seh-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libgcc_s_seh-1.dll no encontrado"
-          cp "$MINGW/bin/libwinpthread-1.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libwinpthread-1.dll no encontrado"
-          cp "$MINGW/bin/libstdc++-6.dll" mingw64/bin/ 2>/dev/null || echo "⚠️ libstdc++-6.dll no encontrado"
-
-          # Librerías (usando find para encontrarlas)
-          find "$MINGW/lib" -maxdepth 1 -name "libgcc*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-          find "$MINGW/lib" -maxdepth 1 -name "libmingw*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-          find "$MINGW/lib" -maxdepth 1 -name "libmsvcrt*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-          find "$MINGW/lib" -maxdepth 1 -name "libkernel32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-          find "$MINGW/lib" -maxdepth 1 -name "libuser32*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-          find "$MINGW/lib" -maxdepth 1 -name "libwinpthread*.a" -exec cp {} mingw64/lib/ \; 2>/dev/null
-
-          # Headers
-          cp -r "$MINGW/include"/* mingw64/include/ 2>/dev/null || true
-
-          # Libexec (cc1.exe es CRUCIAL para compilar)
-          GCC_VER=$(ls "$MINGW/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1)
-          if [ -n "$GCC_VER" ]; then
-            mkdir -p "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER"
-            cp "$MINGW/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/cc1.exe" \
-               "mingw64/libexec/gcc/x86_64-w64-mingw32/$GCC_VER/" 2>/dev/null || true
-          fi
-
-          # Verificar que gcc.exe existe
           if [ -f "mingw64/bin/gcc.exe" ]; then
-            echo "✅ mingw64/bin/gcc.exe encontrado"
+            echo "✅ gcc.exe encontrado"
           else
-            echo "❌ ERROR: No se encontró mingw64/bin/gcc.exe"
+            echo "❌ ERROR: No se encontró gcc.exe"
             exit 1
           fi
 
-          # Mostrar tamaño
           du -sh mingw64
 
-      - name: Generar instalador NSIS
+      - name: Generar instalador
         run: makensis instalador.nsi
 
       - uses: actions/upload-artifact@v4
@@ -195,9 +154,6 @@ jobs:
           name: altair-windows-exe
           path: Altair-Setup-*.exe
 
-  # ──────────────────────────────────────────────────────────────
-  # RELEASE - Publicar todo
-  # ──────────────────────────────────────────────────────────────
   release:
     needs: [linux-deb, macos-pkg, windows-exe]
     runs-on: ubuntu-latest
