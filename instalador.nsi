@@ -113,30 +113,38 @@ SectionEnd
 
 ; ------------------------------------------------------
 ; Subrutina PathContains: comprueba si una ruta está en PATH
-; Entrada: [top] = búsqueda (ruta a añadir)  [next] = PATH actual
-; Salida: pop $R0 = 1 si ya contiene, 0 si no
+; Implementación compatible con versiones de NSIS sin StrLower/StrStr
+; Entrada: [top] = PATH actual  [next] = ruta a buscar
+; Salida: pop $1 = 1 si ya contiene, 0 si no
 ; ------------------------------------------------------
 Function PathContains
-  Exch $R0 ; PATH actual
-  Exch
-  Exch $R1 ; ruta a buscar
-  Push $R2
-  Push $R3
-
-  StrCpy $R2 "0"
-  ; Convertimos a minúsculas para comparación más robusta
-  StrLower $R0 $R0
-  StrLower $R1 $R1
-
-  ; Buscamos la ruta dentro de PATH
-  ClearErrors
-  StrStr $R0 $R1 $R3
-  IfErrors 0 +2
-    StrCpy $R2 "1"
-
-  Pop $R3
-  Pop $R2
-  Exch
+    Exch $0
+    Exch
+    Exch $1
+    Push $2
+    Push $3
+    
+    StrCpy $2 0
+    StrLen $3 $1
+    
+    ${Do}
+        StrCpy $2 $0 $3 $2
+        ${If} $2 == ""
+            ${Break}
+        ${EndIf}
+        
+        ${If} $2 == $1
+            StrCpy $3 1
+            ${Break}
+        ${EndIf}
+        
+        IntOp $2 $2 + 1
+    ${Loop}
+    
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
 FunctionEnd
 
 Section "Uninstall"
