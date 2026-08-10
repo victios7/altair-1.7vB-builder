@@ -197,6 +197,12 @@ static void emitln(CG *g,const char *fmt,...){
     fprintf(g->fp,"\n");
 }
 static int newtmp(CG *g){ return g->tmp++; }
+static char *cg_int_expr(CG *g, char *e){
+    int t=newtmp(g);
+    char *r=cg_fmt("({ AltairVal *_ie%d=%s; int _iv%d=(int)_ie%d->num; altair_val_free(_ie%d); _iv%d; })",t,e,t,t,t,t);
+    free(e);
+    return r;
+}
 static int is_known_class(CG *g,const char *name){
     for(int i=0;i<g->nknown;i++) if(strcmp(g->known_classes[i],name)==0) return 1;
     return 0;
@@ -388,13 +394,17 @@ static char *cg_expr(CG *g, ASTNode *n){
             free(e);
         }
         if(strcmp(n->fun_name,"append")==0){
-
-            char *r=cg_fmt("(altair_list_append(%s,%s),(AltairVal*)NULL)",obj,args);
+            char *r;
+            if(n->nchildren==1)
+                r=cg_fmt("({ AltairVal *_ai=%s; altair_list_append(%s,_ai); altair_val_free(_ai); (AltairVal*)NULL; })",args,obj);
+            else
+                r=cg_fmt("(altair_list_append(%s,%s),(AltairVal*)NULL)",obj,args);
             free(obj); return r;
         }
         if(strcmp(n->fun_name,"remove")==0){
-            char *r=cg_fmt("altair_bool(altair_list_remove(%s,(int)(%s)->num))",obj,args);
-            free(obj); return r;
+            char *ie=cg_int_expr(g,strdup(args));
+            char *r=cg_fmt("altair_bool(altair_list_remove(%s,%s))",obj,ie);
+            free(obj); free(ie); return r;
         }
         if(strcmp(n->fun_name,"clear")==0){
             char *r=cg_fmt("(altair_list_clear(%s),(AltairVal*)NULL)",obj);
@@ -415,8 +425,9 @@ static char *cg_expr(CG *g, ASTNode *n){
             free(obj); return r;
         }
         if(strcmp(n->fun_name,"status")==0){
-            char *r=cg_fmt("(altair_respond_status(_altair_res,(int)(%s)->num),(AltairVal*)NULL)",args);
-            free(obj); return r;
+            char *ie=cg_int_expr(g,strdup(args));
+            char *r=cg_fmt("(altair_respond_status(_altair_res,%s),(AltairVal*)NULL)",ie);
+            free(obj); free(ie); return r;
         }
 
         if(strcmp(n->fun_name,"param")==0){
@@ -462,14 +473,14 @@ static char *cg_expr(CG *g, ASTNode *n){
     }
 
     case ND_INDEX_ACCESS: {
-        char *ie=cg_expr(g,n->idx_expr);
+        char *ie=cg_int_expr(g,cg_expr(g,n->idx_expr));
         char *r;
 
         if(g->in_fun && !is_local_var(g,n->idx_list)){
-            r=cg_fmt("altair_val_copy(altair_list_get(altair_var_get(altair_var_lookup(\"%s\")),(int)(%s)->num,%d))",
+            r=cg_fmt("altair_val_copy(altair_list_get(altair_var_get(altair_var_lookup(\"%s\")),%s,%d))",
                      n->idx_list, ie, n->line);
         } else {
-            r=cg_fmt("altair_val_copy(altair_list_get(altair_var_get(%s_var),(int)(%s)->num,%d))",
+            r=cg_fmt("altair_val_copy(altair_list_get(altair_var_get(%s_var),%s,%d))",
                      n->idx_list, ie, n->line);
         }
         free(ie); return r;
@@ -683,11 +694,11 @@ static void cg_stmt(CG *g, ASTNode *n){
         char *ie=cg_expr(g,n->idx_expr);
         char *val=cg_expr(g,n->idx_val);
         if(g->in_fun && !is_local_var(g,n->idx_list)){
-            emitln(g,"{ AltairVal *_glst=altair_var_get(altair_var_lookup(\"%s\")); altair_list_set(_glst,(int)(%s)->num,%s,%d); altair_val_free(%s); }",
+            emitln(g,"{ AltairVal *_glst=altair_var_get(altair_var_lookup(\"%s\")); AltairVal *_ixv=%s; altair_list_set(_glst,(int)_ixv->num,%s,%d); altair_val_free(_ixv); altair_val_free(%s); }",
                    n->idx_list,ie,val,n->line,val);
         } else {
-            emitln(g,"{ altair_list_set(altair_var_get(%s_var),(int)(%s)->num,%s,%d); altair_val_free(%s); }",
-                   n->idx_list,ie,val,n->line,val);
+            emitln(g,"{ AltairVal *_ixv=%s; altair_list_set(altair_var_get(%s_var),(int)_ixv->num,%s,%d); altair_val_free(_ixv); altair_val_free(%s); }",
+                   ie,n->idx_list,val,n->line,val);
         }
         free(ie); free(val);
         break;
@@ -783,7 +794,23 @@ static void cg_stmt(CG *g, ASTNode *n){
     case ND_FOREACH: {
         g->loop_depth++;
         int t=newtmp(g);
-        char *lst=cg_expr(g,n->iter_list_expr);
+        int owns_fl=1;
+        char *lst;
+        if(n->iter_list_expr->kind==ND_IDENT){
+            const char *name=n->iter_list_expr->str_val;
+            if(g->in_method && is_field(g,name))
+                lst=cg_fmt("altair_obj_get(_self,\"%s\",%d)",name,n->line);
+            else if(is_token_var(g,name))
+                lst=NULL;
+            else if(g->in_fun && !is_local_var(g,name) && !is_catch_id(g,name))
+                lst=cg_fmt("altair_var_get(altair_var_lookup(\"%s\"))",name);
+            else
+                lst=cg_fmt("altair_var_get(%s_var)",name);
+            if(lst) owns_fl=0;
+            else lst=cg_expr(g,n->iter_list_expr);
+        } else {
+            lst=cg_expr(g,n->iter_list_expr);
+        }
         emitln(g,"{ AltairVal *_fl%d=%s;",t,lst); free(lst);
         g->indent++;
         emitln(g,"int _flen%d=altair_list_length(_fl%d);",t,t);
@@ -799,6 +826,7 @@ static void cg_stmt(CG *g, ASTNode *n){
         emitln(g,"}");
 
         emitln(g,"altair_var_release(&%s_var);",n->iter_var);
+        if(owns_fl) emitln(g,"altair_val_free(_fl%d);",t);
         g->indent--;
         emitln(g,"}");
         g->loop_depth--;
@@ -1569,7 +1597,7 @@ void codegen_emit(ASTNode *program, FILE *fp,
     fprintf(fp,"\n/* ===== End of Runtime ===== */\n\n");
 
     if(g.use_raylib){
-        fprintf(fp,"/* ===== Raylib (v1.7 graphics) ===== */\n");
+        fprintf(fp,"/* ===== Raylib (v1.7.5vB graphics) ===== */\n");
         fprintf(fp,"#include \"raylib.h\"\n\n");
     }
 

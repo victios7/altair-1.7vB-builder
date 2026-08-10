@@ -64,6 +64,15 @@ int         _altair_try_depth = 0;
 
 static AltairVar *g_var_head = NULL;
 
+#define VAR_HASH_BUCKETS 1024
+static AltairVar *g_var_hash[VAR_HASH_BUCKETS];
+
+static inline unsigned var_hash(const char *s) {
+    unsigned h = 2166136261u;
+    while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+    return h & (VAR_HASH_BUCKETS - 1);
+}
+
 #define MAX_TEMP 4096
 static struct { void *ptr; size_t sz; } g_temp[MAX_TEMP];
 static int g_ntemp = 0;
@@ -193,6 +202,7 @@ void altair_shutdown(void) {
         v = nx;
     }
     g_var_head = NULL;
+    memset(g_var_hash, 0, sizeof(g_var_hash));
 
     for (int i=0; i<g_ntemp; i++) {
         memset(g_temp[i].ptr, 0, g_temp[i].sz);
@@ -245,37 +255,48 @@ void altair_throw(const char *code, const char *msg, int line) {
     }
 }
 
+static AltairVal *g_val_pool = NULL;
+static AltairVal *val_pool_alloc(void) {
+    AltairVal *v = g_val_pool;
+    if (v) { g_val_pool = *(AltairVal**)v; return v; }
+    return (AltairVal*)malloc(sizeof(AltairVal));
+}
+static void val_pool_free(AltairVal *v) {
+    *(AltairVal**)v = g_val_pool;
+    g_val_pool = v;
+}
+
 AltairVal *altair_num(double n) {
-    AltairVal *v = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_NUMERIC; v->num = n; return v;
 }
 AltairVal *altair_str(const char *s) {
-    AltairVal *v = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_TEXT; v->str = strdup(s ? s : ""); return v;
 }
 
 AltairVal *altair_str_own(char *s) {
-    AltairVal *v = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_TEXT; v->str = s ? s : strdup(""); return v;
 }
 AltairVal *altair_bool(int b) {
-    AltairVal *v = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_BOOL; v->boolean = b ? 1 : 0; return v;
 }
 AltairVal *altair_list_new(void) {
-    AltairVal *v = (AltairVal*)calloc(1, sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_LIST; v->list.items=NULL; v->list.len=0; v->list.cap=0;
     return v;
 }
 AltairVal *altair_token_new(AltairVal *inner) {
-    AltairVal *v = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *v = val_pool_alloc();
     v->type = ALT_TOKEN; v->tok.inner=altair_val_copy(inner); v->tok.consumed=0;
     return v;
 }
 
 AltairVal *altair_val_copy(const AltairVal *v) {
     if (!v) return altair_num(0);
-    AltairVal *c = (AltairVal*)malloc(sizeof(AltairVal));
+    AltairVal *c = val_pool_alloc();
     *c = *v;
     if (v->type==ALT_TEXT)  c->str = strdup(v->str ? v->str : "");
     if (v->type==ALT_LIST) {
@@ -317,7 +338,7 @@ void altair_val_free(AltairVal *v) {
     if (v->type==ALT_OBJECT && v->obj) {
         altair_obj_free(v->obj); v->obj=NULL;
     }
-    free(v);
+    val_pool_free(v);
 }
 
 char *altair_val_tostr(const AltairVal *v) {
@@ -362,8 +383,17 @@ char *altair_val_tostr(const AltairVal *v) {
 
 void altair_var_register(AltairVar *v) {
     v->next = g_var_head; g_var_head = v;
+    unsigned h = var_hash(v->name);
+    v->hnext = g_var_hash[h];
+    g_var_hash[h] = v;
 }
 void altair_var_unregister(const char *name) {
+    unsigned h = var_hash(name);
+    AltairVar **hp = &g_var_hash[h];
+    while (*hp) {
+        if (strcmp((*hp)->name, name)==0) { *hp=(*hp)->hnext; break; }
+        hp = &(*hp)->hnext;
+    }
     AltairVar **pp = &g_var_head;
     while (*pp) {
         if (strcmp((*pp)->name, name)==0) { *pp=(*pp)->next; return; }
@@ -371,7 +401,8 @@ void altair_var_unregister(const char *name) {
     }
 }
 AltairVar *altair_var_lookup(const char *name) {
-    for (AltairVar *v=g_var_head; v; v=v->next)
+    unsigned h = var_hash(name);
+    for (AltairVar *v=g_var_hash[h]; v; v=v->hnext)
         if (strcmp(v->name, name)==0) return v;
     return NULL;
 }
@@ -1089,7 +1120,7 @@ AltairVal *altair_system(const char *key) {
 }
 
 AltairVal *altair_compiler(const char *key) {
-    if(strcmp(key,"version")==0)      return altair_str("1.7");
+    if(strcmp(key,"version")==0)      return altair_str("1.7.5vB");
     if(strcmp(key,"name")==0)         return altair_str("altairc");
     if(strcmp(key,"build")==0)        return altair_str(__DATE__);
     if(strcmp(key,"architecture")==0){
@@ -1259,7 +1290,7 @@ static void parse_request(int fd, AltairRequest *req) {
 static void send_response(int fd, AltairResponse *res) {
     char header[1024];
     int hl=snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\nX-Powered-By: Altair/1.7\r\n\r\n",
+        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\nX-Powered-By: Altair/1.7.5vB\r\n\r\n",
         res->status,
         res->status==200?"OK":res->status==201?"Created":res->status==401?"Unauthorized":
         res->status==404?"Not Found":res->status==429?"Too Many Requests":"Error",

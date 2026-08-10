@@ -1,6 +1,6 @@
-# Altair Compiler v1.7 - Makefile
+# Altair Compiler v1.7.5vB - Makefile
 CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
+CFLAGS  = -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
            -DALTAIR_RT_H=\"$(ALTAIR_RT_H)\" \
            -DALTAIR_RT_C=\"$(ALTAIR_RT_C)\"
 ALTAIR_RT_H = $(abspath runtime/altair_rt.h)
@@ -10,9 +10,9 @@ OBJS = $(SRCS:.c=.o)
 .PHONY: all clean test install
 all: altairc
 altairc: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -o $@ $^ -lm -flto
 	@echo ""
-	@echo "  altairc 1.7 built. Usage: ./altairc <program.at> -o <output>"
+	@echo "  altairc 1.7.5vB built. Usage: ./altairc <program.at> -o <output>"
 	@echo "  Guide: ./altairc guide"
 	@echo ""
 %.o: %.c
@@ -24,5 +24,4 @@ test: altairc
 install: altairc
 	@mkdir -p ~/.local/bin
 	cp altairc ~/.local/bin/altairc
-	cp ALTAIR_GUIDE.md ~/.local/bin/ALTAIR_GUIDE.md
 	@echo "Installed to ~/.local/bin/altairc"

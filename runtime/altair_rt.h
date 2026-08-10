@@ -69,6 +69,7 @@ struct AltairVar {
     int           nprefer;
 
     AltairVar  *next;
+    AltairVar  *hnext;
 };
 
 struct AltairObj {
