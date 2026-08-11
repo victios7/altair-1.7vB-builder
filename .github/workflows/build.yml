@@ -2,93 +2,47 @@ name: build
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  linux-deb:
+  linux-pkg:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Instalar dependencias
+      - name: Build
+        run: make
+      - name: Package
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
-
-      - name: Compilar altairc
-        run: |
-          make clean || true
-          make
-
-      - name: Crear paquete .deb
-        run: |
-          VERSION="1.7.5vB"
-          PKGDIR="altair_${VERSION}_amd64"
-          mkdir -p "$PKGDIR/DEBIAN"
-          mkdir -p "$PKGDIR/usr/local/bin"
-          mkdir -p "$PKGDIR/usr/local/share/altair"
-
-          cp altairc "$PKGDIR/usr/local/bin/altairc"
-          chmod 755 "$PKGDIR/usr/local/bin/altairc"
-
-          cp -r runtime "$PKGDIR/usr/local/share/altair/"
-          cp -r examples "$PKGDIR/usr/local/share/altair/"
-          cp ALTAIR_LOGO.ico "$PKGDIR/usr/local/share/altair/"
-
-          cat > "$PKGDIR/DEBIAN/control" <<EOF
-          Package: altair
-          Version: ${VERSION}
-          Section: devel
-          Priority: optional
-          Architecture: amd64
-          Maintainer: victios7
-          Description: Altair Language Compiler
-           Compilador del lenguaje Altair v${VERSION}
-          EOF
-
-          dpkg-deb --build --root-owner-group "$PKGDIR"
-
+          mkdir -p dist/altair-linux
+          cp altairc dist/altair-linux/
+          cp -r runtime dist/altair-linux/
+          cp -r examples dist/altair-linux/
+          cp ALTAIR_LOGO.ico dist/altair-linux/
+          cd dist && tar -czf altair-linux.pkg.tar.gz altair-linux
       - uses: actions/upload-artifact@v4
         with:
-          name: altair-linux-deb
-          path: altair_*.deb
+          name: altair-linux-pkg
+          path: dist/altair-linux.pkg.tar.gz
 
-  macos-pkg:
+  macos-zip:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Compilar altairc
+      - name: Build
+        run: make
+      - name: Package
         run: |
-          make clean || true
-          make
-
-      - name: Crear .pkg
-        run: |
-          VERSION="1.7.5vB"
-          PKGROOT="pkgroot"
-          mkdir -p "$PKGROOT/usr/local/bin"
-          mkdir -p "$PKGROOT/usr/local/share/altair"
-
-          cp altairc "$PKGROOT/usr/local/bin/altairc"
-          chmod 755 "$PKGROOT/usr/local/bin/altairc"
-
-          cp -r runtime "$PKGROOT/usr/local/share/altair/"
-          cp -r examples "$PKGROOT/usr/local/share/altair/"
-          cp ALTAIR_LOGO.ico "$PKGROOT/usr/local/share/altair/"
-
-          pkgbuild \
-            --root "$PKGROOT" \
-            --identifier com.altair.compiler \
-            --version "${VERSION}" \
-            --install-location "/" \
-            "Altair-Setup-${VERSION}.pkg"
-
+          mkdir -p dist/altair-macos
+          cp altairc dist/altair-macos/
+          cp -r runtime dist/altair-macos/
+          cp -r examples dist/altair-macos/
+          cp ALTAIR_LOGO.ico dist/altair-macos/
+          cd dist && zip -qr altair-macos.zip altair-macos
       - uses: actions/upload-artifact@v4
         with:
-          name: altair-macos-pkg
-          path: Altair-Setup-*.pkg
+          name: altair-macos-zip
+          path: dist/altair-macos.zip
 
   windows-exe:
     runs-on: windows-latest
@@ -97,83 +51,102 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
-
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: >-
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-make
             mingw-w64-x86_64-nsis
             zip
-
-      - name: Compilar altairc.exe
+      - name: Build compiler
         run: |
           gcc -O3 -flto -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
               -DALTAIR_RT_H=\"$(cygpath -m "$(pwd)/runtime/altair_rt.h")\" \
               -DALTAIR_RT_C=\"$(cygpath -m "$(pwd)/runtime/altair_rt.c")\" \
               -Isrc -o altairc.exe \
               src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c -lm
-
-      - name: Compilar altair-terminal.exe
+      - name: Build terminal
         run: |
           gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
-
-      - name: Copiar mingw64 completo
+      - name: Stage installer tree
         run: |
-          if [ -d "/mingw64" ]; then
-            MINGW="/mingw64"
-          elif [ -d "/ucrt64" ]; then
-            MINGW="/ucrt64"
-          elif [ -d "/clang64" ]; then
-            MINGW="/clang64"
-          else
-            echo "❌ ERROR: No se encontró mingw64"
-            exit 1
-          fi
-
-          echo "✅ Usando MINGW=$MINGW"
-          echo "📦 Copiando mingw64 completo..."
-          cp -r "$MINGW" mingw64
-
-          if [ -f "mingw64/bin/gcc.exe" ]; then
-            echo "✅ gcc.exe encontrado"
-          else
-            echo "❌ ERROR: No se encontró gcc.exe"
-            exit 1
-          fi
-
-          du -sh mingw64
-
-      - name: Generar instalador
+          mkdir -p mingw64
+          cp -r /mingw64/bin mingw64/bin
+          cp -r /mingw64/lib mingw64/lib
+          cp -r /mingw64/include mingw64/include
+          [ -d /mingw64/libexec ] && cp -r /mingw64/libexec mingw64/libexec || true
+          [ -d /mingw64/x86_64-w64-mingw32 ] && cp -r /mingw64/x86_64-w64-mingw32 mingw64/x86_64-w64-mingw32 || true
+      - name: Build installer
         run: makensis instalador.nsi
-
+      - name: Package zip
+        run: |
+          mkdir -p dist/altair-windows
+          cp altairc.exe altair-terminal.exe ALTAIR_LOGO.ico dist/altair-windows/
+          cp -r runtime dist/altair-windows/
+          cp -r examples dist/altair-windows/
+          cd dist && zip -qr altair-windows.zip altair-windows
       - uses: actions/upload-artifact@v4
         with:
-          name: altair-windows-exe
+          name: altair-windows-zip
+          path: dist/altair-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-windows-installer
           path: Altair-Setup-*.exe
 
+  linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Build deb
+        run: |
+          mkdir -p pkgroot/DEBIAN
+          mkdir -p pkgroot/usr/bin
+          mkdir -p pkgroot/usr/share/altair/runtime
+          mkdir -p pkgroot/usr/share/altair/examples
+          cp altairc pkgroot/usr/bin/
+          cp -r runtime/* pkgroot/usr/share/altair/runtime/
+          cp -r examples/* pkgroot/usr/share/altair/examples/
+          printf 'Package: altair\nVersion: 1.7.5\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: victios7\nDescription: Altair compiler\n' > pkgroot/DEBIAN/control
+          dpkg-deb --build pkgroot altair_1.7.5vB_amd64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-linux-deb
+          path: altair_1.7.5vB_amd64.deb
+
+  macos-pkg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Build pkg
+        run: |
+          mkdir -p pkgroot/usr/local/bin
+          mkdir -p pkgroot/usr/local/share/altair/runtime
+          mkdir -p pkgroot/usr/local/share/altair/examples
+          cp altairc pkgroot/usr/local/bin/
+          cp -r runtime/* pkgroot/usr/local/share/altair/runtime/
+          cp -r examples/* pkgroot/usr/local/share/altair/examples/
+          pkgbuild --root pkgroot --identifier com.victios7.altair --version 1.7.5vB --install-location / altair-1.7.5vB.pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altair-macos-pkg
+          path: altair-1.7.5vB.pkg
+
   release:
-    needs: [linux-deb, macos-pkg, windows-exe]
+    needs: [linux-pkg, macos-zip, windows-exe, linux-deb, macos-pkg]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Listar artefactos
-        run: |
-          echo "📦 Artefactos descargados:"
-          find artifacts -type f -exec ls -lh {} \;
-
-      - name: Publicar release
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          files: |
-            artifacts/**/*.deb
-            artifacts/**/*.pkg
-            artifacts/**/*.exe
-          generate_release_notes: true
+          files: artifacts/**/*
