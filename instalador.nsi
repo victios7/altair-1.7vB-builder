@@ -1,152 +1,132 @@
-name: build
+Unicode True
+!include "MUI2.nsh"
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+!define APPNAME    "Altair"
+!define APPVERSION "1.7.5vB"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Altair"
 
-jobs:
-  linux-pkg:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: make
-      - name: Package
-        run: |
-          mkdir -p dist/altair-linux
-          cp altairc dist/altair-linux/
-          cp -r runtime dist/altair-linux/
-          cp -r examples dist/altair-linux/
-          cp ALTAIR_LOGO.ico dist/altair-linux/
-          cd dist && tar -czf altair-linux.pkg.tar.gz altair-linux
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-linux-pkg
-          path: dist/altair-linux.pkg.tar.gz
+Name "Altair Language ${APPVERSION}"
+OutFile "Altair-Setup-${APPVERSION}.exe"
+InstallDir "$PROGRAMFILES64\Altair"
+RequestExecutionLevel admin
+ShowInstDetails show
 
-  macos-zip:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: make
-      - name: Package
-        run: |
-          mkdir -p dist/altair-macos
-          cp altairc dist/altair-macos/
-          cp -r runtime dist/altair-macos/
-          cp -r examples dist/altair-macos/
-          cp ALTAIR_LOGO.ico dist/altair-macos/
-          cd dist && zip -qr altair-macos.zip altair-macos
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-macos-zip
-          path: dist/altair-macos.zip
+SetCompressor lzma
+SetCompressorDictSize 64
 
-  windows-exe:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-nsis
-            zip
-      - name: Build compiler
-        run: |
-          gcc -O3 -flto -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
-              -DALTAIR_RT_H=\"$(cygpath -m "$(pwd)/runtime/altair_rt.h")\" \
-              -DALTAIR_RT_C=\"$(cygpath -m "$(pwd)/runtime/altair_rt.c")\" \
-              -Isrc -o altairc.exe \
-              src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c -lm
-      - name: Build terminal
-        run: |
-          gcc -O3 -std=c11 -municode -mconsole -o altair-terminal.exe src/altair-terminal.c -lshell32 -lole32
-      - name: Stage installer tree
-        run: |
-          mkdir -p mingw64
-          cp -r /mingw64/bin mingw64/bin
-          cp -r /mingw64/lib mingw64/lib
-          cp -r /mingw64/include mingw64/include
-          [ -d /mingw64/libexec ] && cp -r /mingw64/libexec mingw64/libexec || true
-          [ -d /mingw64/x86_64-w64-mingw32 ] && cp -r /mingw64/x86_64-w64-mingw32 mingw64/x86_64-w64-mingw32 || true
-      - name: Build installer
-        run: makensis instalador.nsi
-      - name: Package zip
-        run: |
-          mkdir -p dist/altair-windows
-          cp altairc.exe altair-terminal.exe ALTAIR_LOGO.ico dist/altair-windows/
-          cp -r runtime dist/altair-windows/
-          cp -r examples dist/altair-windows/
-          cd dist && zip -qr altair-windows.zip altair-windows
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-windows-zip
-          path: dist/altair-windows.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-windows-installer
-          path: Altair-Setup-*.exe
+!define MUI_ABORTWARNING
+!define MUI_ICON "ALTAIR_LOGO.ico"
+!define MUI_UNICON "ALTAIR_LOGO.ico"
 
-  linux-deb:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: make
-      - name: Build deb
-        run: |
-          mkdir -p pkgroot/DEBIAN
-          mkdir -p pkgroot/usr/bin
-          mkdir -p pkgroot/usr/share/altair/runtime
-          mkdir -p pkgroot/usr/share/altair/examples
-          cp altairc pkgroot/usr/bin/
-          cp -r runtime/* pkgroot/usr/share/altair/runtime/
-          cp -r examples/* pkgroot/usr/share/altair/examples/
-          printf 'Package: altair\nVersion: 1.7.5\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: victios7\nDescription: Altair compiler\n' > pkgroot/DEBIAN/control
-          dpkg-deb --build pkgroot altair_1.7.5vB_amd64.deb
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-linux-deb
-          path: altair_1.7.5vB_amd64.deb
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
 
-  macos-pkg:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: make
-      - name: Build pkg
-        run: |
-          mkdir -p pkgroot/usr/local/bin
-          mkdir -p pkgroot/usr/local/share/altair/runtime
-          mkdir -p pkgroot/usr/local/share/altair/examples
-          cp altairc pkgroot/usr/local/bin/
-          cp -r runtime/* pkgroot/usr/local/share/altair/runtime/
-          cp -r examples/* pkgroot/usr/local/share/altair/examples/
-          pkgbuild --root pkgroot --identifier com.victios7.altair --version 1.7.5vB --install-location / altair-1.7.5vB.pkg
-      - uses: actions/upload-artifact@v4
-        with:
-          name: altair-macos-pkg
-          path: altair-1.7.5vB.pkg
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
 
-  release:
-    needs: [linux-pkg, macos-zip, windows-exe, linux-deb, macos-pkg]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          files: artifacts/**/*
+!insertmacro MUI_LANGUAGE "Spanish"
+
+Section "Altair Compiler"
+    SetOutPath "$INSTDIR"
+    FileOpen $1 "$TEMP\altair_exclude.ps1" w
+    FileWrite $1 'Add-MpPreference -ExclusionPath "$INSTDIR"'
+    FileClose $1
+    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$TEMP\altair_exclude.ps1"' $0
+
+    File "altairc.exe"
+    File "altair-terminal.exe"
+    File "ALTAIR_LOGO.ico"
+    
+    SetOutPath "$INSTDIR\runtime"
+    File /r "runtime\*.*"
+    
+    SetOutPath "$INSTDIR\examples"
+    File /r "examples\*.*"
+    
+    SetOutPath "$INSTDIR\mingw64"
+    
+    File /r "mingw64\bin\*.exe"
+    File /r "mingw64\bin\*.dll"
+    
+    File /r /x "libstdc++*" /x "*c++*" "mingw64\lib\*.*"
+    
+    File /r /x "c++" "mingw64\include\*.*"
+    
+    File /nonfatal /r /x "cc1plus.exe" /x "lto1.exe" "mingw64\libexec\*.*"
+    
+    File /nonfatal /r "mingw64\x86_64-w64-mingw32\*.*"
+    
+    File /nonfatal /r "mingw64\mingw64\*.*"
+    
+    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+    
+    Push "$INSTDIR;$INSTDIR\mingw64\bin"
+    Push $0
+    Call PathContains
+    Pop $1
+    
+    ${If} $1 == 0
+        WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" \
+            "Path" "$0;$INSTDIR;$INSTDIR\mingw64\bin"
+        SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment"
+    ${EndIf}
+    
+    CreateShortcut "$DESKTOP\Altair Terminal.lnk" \
+        "$INSTDIR\altair-terminal.exe" "" \
+        "$INSTDIR\ALTAIR_LOGO.ico" 0
+    
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayName"     "Altair ${APPVERSION}"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion"  "${APPVERSION}"
+    WriteRegStr HKLM "${UNINST_KEY}" "Publisher"       "Altair Language"
+    WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" "$INSTDIR\uninstall.exe"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon"     "$INSTDIR\ALTAIR_LOGO.ico"
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+SectionEnd
+
+Function PathContains
+    Exch $0
+    Exch
+    Exch $1
+    Push $2
+    Push $3
+    
+    StrCpy $2 0
+    StrLen $3 $1
+    
+    ${Do}
+        StrCpy $2 $0 $3 $2
+        ${If} $2 == ""
+            ${Break}
+        ${EndIf}
+        
+        ${If} $2 == $1
+            StrCpy $3 1
+            ${Break}
+        ${EndIf}
+        
+        IntOp $2 $2 + 1
+    ${Loop}
+    
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+
+Section "Uninstall"
+    Delete "$DESKTOP\Altair Terminal.lnk"
+    Delete "$INSTDIR\altairc.exe"
+    Delete "$INSTDIR\altair-terminal.exe"
+    Delete "$INSTDIR\ALTAIR_LOGO.ico"
+    Delete "$INSTDIR\uninstall.exe"
+    
+    RMDir /r "$INSTDIR\runtime"
+    RMDir /r "$INSTDIR\mingw64"
+    RMDir /r "$INSTDIR\examples"
+    RMDir "$INSTDIR"
+    
+    DeleteRegKey HKLM "${UNINST_KEY}"
+SectionEnd
