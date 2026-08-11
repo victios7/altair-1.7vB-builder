@@ -45,20 +45,11 @@ Section "Altair Compiler"
     SetOutPath "$INSTDIR\examples"
     File /r "examples\*.*"
     
-    SetOutPath "$INSTDIR\mingw64"
-    
-    File /r "mingw64\bin\*.exe"
-    File /r "mingw64\bin\*.dll"
-    
-    File /r /x "libstdc++*" /x "*c++*" "mingw64\lib\*.*"
-    
-    File /r /x "c++" "mingw64\include\*.*"
-    
-    File /nonfatal /r /x "cc1plus.exe" /x "lto1.exe" "mingw64\libexec\*.*"
-    
-    File /nonfatal /r "mingw64\x86_64-w64-mingw32\*.*"
-    
-    File /nonfatal /r "mingw64\mingw64\*.*"
+    SetOutPath "$INSTDIR"
+    File "mingw64.zip"
+    DetailPrint "Instalando compilador C, esto puede tardar varios minutos..."
+    ExecWait 'powershell -NoProfile -Command "Expand-Archive -Path \"$INSTDIR\mingw64.zip\" -DestinationPath \"$INSTDIR\" -Force"' $0
+    Delete "$INSTDIR\mingw64.zip"
     
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
     
