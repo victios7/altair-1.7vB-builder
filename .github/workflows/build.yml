@@ -81,10 +81,10 @@ jobs:
           [ -d /mingw64/libexec ] && cp -r /mingw64/libexec mingw64/libexec || true
           [ -d /mingw64/x86_64-w64-mingw32 ] && cp -r /mingw64/x86_64-w64-mingw32 mingw64/x86_64-w64-mingw32 || true
           rm -rf mingw64/include/c++
-          find mingw64/lib -iname "libstdc++*" -delete
-          find mingw64/lib -iname "*c++*" -delete
-          find mingw64/libexec -iname "cc1plus.exe" -delete
-          find mingw64/libexec -iname "lto1.exe" -delete
+          [ -d mingw64/lib ] && find mingw64/lib -iname "libstdc++*" -delete || true
+          [ -d mingw64/lib ] && find mingw64/lib -iname "*c++*" -delete || true
+          [ -d mingw64/libexec ] && find mingw64/libexec -iname "cc1plus.exe" -delete || true
+          [ -d mingw64/libexec ] && find mingw64/libexec -iname "lto1.exe" -delete || true
           zip -qr mingw64.zip mingw64
           rm -rf mingw64
       - name: Build installer
