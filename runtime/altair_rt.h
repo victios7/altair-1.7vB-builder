@@ -41,7 +41,7 @@ struct AltairVal {
         struct { AltairVal **items; int len; int cap; } list;
         AltairObj  *obj;
         struct { AltairVal *inner; int consumed; } tok;
-        void       *ptr;   /* used by ALT_FILE (FILE*) and ALT_POINTER (raw pointer) */
+        void       *ptr;
     };
 };
 
@@ -69,7 +69,9 @@ struct AltairVar {
     int           nprefer;
 
     AltairVar  *next;
+    AltairVar  *prev;
     AltairVar  *hnext;
+    AltairVar  *hprev;
 };
 
 struct AltairObj {
@@ -192,7 +194,6 @@ void       altair_disk_delete(const char *var_name, AltStorage stor);
 void altair_wait(double seconds);
 void altair_throw(const char *code, const char *msg, int line);
 
-/* --- Self-hosting support: bitwise ops --- */
 AltairVal *altair_band(AltairVal *a, AltairVal *b, int line);
 AltairVal *altair_bor(AltairVal *a, AltairVal *b, int line);
 AltairVal *altair_bxor(AltairVal *a, AltairVal *b, int line);
@@ -200,7 +201,6 @@ AltairVal *altair_bnot(AltairVal *a, int line);
 AltairVal *altair_shl(AltairVal *a, AltairVal *b, int line);
 AltairVal *altair_shr(AltairVal *a, AltairVal *b, int line);
 
-/* --- Self-hosting support: file system access --- */
 AltairVal *altair_new_file(void *fp);
 AltairVal *altair_new_ptr(void *p);
 
@@ -217,11 +217,9 @@ AltairVal *_fn_mkdir(AltairVal *path);
 AltairVal *_fn_file_exists(AltairVal *path);
 AltairVal *_fn_list_dir(AltairVal *path);
 
-/* --- Self-hosting support: external process execution --- */
 AltairVal *_fn_exec(AltairVal *cmd);
 AltairVal *_fn_exec_capture(AltairVal *cmd);
 
-/* --- Self-hosting support: raw pointers --- */
 AltairVal *_fn_ptr_alloc(AltairVal *size);
 AltairVal *_fn_ptr_free(AltairVal *p);
 AltairVal *_fn_ptr_is_null(AltairVal *p);
@@ -233,13 +231,11 @@ AltairVal *_fn_p_null(AltairVal *p);
 AltairVal *_fn_p_free(AltairVal *p);
 AltairVal *_fn_data_migrate(AltairVal *prefix, AltairVal *lugar);
 
-/* --- Self-hosting support: CLI arguments --- */
 void altair_set_args(int argc, char **argv);
 AltairVal *_fn_argc(void);
 AltairVal *_fn_arg(AltairVal *idx);
 AltairVal *_fn_length(AltairVal *v);
 
-/* --- Self-hosting support: named persistent variables (variables/ folder) --- */
 AltairVal *altair_persist_load(const char *file);
 void altair_persist_save(const char *file, AltairVal *v);
 void altair_persist_register(const char *file, AltairVar *v);
@@ -331,4 +327,3 @@ void altair_job_register(const char *name, void (*fn)(void), long interval_secs)
 void altair_jobs_tick(void);
 
 #endif
-

@@ -26,4 +26,3 @@ void ast_free(ASTNode *n){
     ast_free(n->idx_val);
     free(n);
 }
-

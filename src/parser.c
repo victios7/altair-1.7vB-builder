@@ -37,7 +37,7 @@ static VType tok_to_vtype(TokenKind k){
     case TOK_NUMERIC:return VTYPE_NUMERIC; case TOK_TEXT:return VTYPE_TEXT;
     case TOK_BOOL:return VTYPE_BOOL;       case TOK_LIST:return VTYPE_LIST;
     case TOK_OBJECT:return VTYPE_OBJECT;   case TOK_TOKEN:return VTYPE_TOKEN;
-    case TOK_CHAR:return VTYPE_TEXT; /* char is a 1-char text */
+    case TOK_CHAR:return VTYPE_TEXT;
     case TOK_FILE:return VTYPE_FILE;
     default:return VTYPE_VOID;
     }
@@ -1490,13 +1490,13 @@ static ASTNode *parse_stmt(Parser *p){
             }
             else { n->storage=tok_to_stor(p->cur.kind); advance(p); }
         }
-        if(is_ident_like(p)){
+        if(is_ident_like(p) && p->cur.line==n->line){
             Lexer lex_save=p->lex; Token cur_save=p->cur;
             char part1[128]; strncpy(part1,p->cur.value,127);
             advance(p);
-            if(check(p,TOK_DOT)){
+            if(check(p,TOK_DOT) && p->cur.line==n->line){
                 advance(p);
-                if(is_ident_like(p)){
+                if(is_ident_like(p) && p->cur.line==n->line){
                     char part2[128]; strncpy(part2,p->cur.value,127);
                     advance(p);
                     snprintf(n->persist_file,255,"%s.%s",part1,part2);
@@ -1592,4 +1592,3 @@ ASTNode *parse_program(const char *source){
     prog->children[prog->nchildren++]=body;
     return prog;
 }
-

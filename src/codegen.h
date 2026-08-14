@@ -7,4 +7,3 @@ void codegen_emit(ASTNode *program, FILE *fp,
                   const char *runtime_c_path,
                   const char *source_file);
 #endif
-

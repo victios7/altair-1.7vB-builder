@@ -118,4 +118,3 @@ Token       lexer_next(Lexer *l);
 Token       lexer_peek(Lexer *l);
 const char *tok_kind_str(TokenKind k);
 #endif
-

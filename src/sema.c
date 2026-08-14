@@ -316,4 +316,3 @@ void sema_check(ASTNode *program){
 
     for(int i=0;i<program->nchildren;i++) check_node(program->children[i],0,0);
 }
-

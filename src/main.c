@@ -355,4 +355,3 @@ int main(int argc, char **argv){
     fprintf(stderr,"[altairc] Done. Output: %s\n", output_file);
     return 0;
 }
-

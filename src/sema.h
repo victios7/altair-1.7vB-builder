@@ -3,4 +3,3 @@
 #include "ast.h"
 void sema_check(ASTNode *program);
 #endif
-

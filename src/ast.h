@@ -185,4 +185,3 @@ struct ASTNode {
 ASTNode *ast_new(NodeKind kind, int line);
 void     ast_free(ASTNode *n);
 #endif
-

@@ -17,6 +17,7 @@ typedef struct {
     int   nclass_fields;
     int   in_method;
     int   loop_depth;
+    int   loop_scope_mark[64];
     char  known_classes[64][128];
     int   nknown;
     char  catch_ids[16][64];
@@ -31,8 +32,13 @@ typedef struct {
     char  local_vars[256][128];
     int   nlocal;
     int   in_fun;
+    int   scope_mark[64];
+    int   scope_depth;
     char  known_funs[128][128];
     int   nknown_funs;
+
+    char  cur_fun_params[16][128];
+    int   n_cur_fun_params;
 
     int   use_raylib;
     int   gfx_scene_count;
@@ -196,12 +202,407 @@ static void emitln(CG *g,const char *fmt,...){
     ind(g); va_list ap; va_start(ap,fmt); vfprintf(g->fp,fmt,ap); va_end(ap);
     fprintf(g->fp,"\n");
 }
+static void scope_push(CG *g){
+    if(g->scope_depth<64) g->scope_mark[g->scope_depth++]=g->nlocal;
+}
+static void scope_pop_release(CG *g){
+    if(g->scope_depth<=0) return;
+    int mark=g->scope_mark[--g->scope_depth];
+    for(int i=g->nlocal-1;i>=mark;i--)
+        emitln(g,"altair_var_release(&%s_var);",g->local_vars[i]);
+    g->nlocal=mark;
+}
+static void emit_release_open_scopes(CG *g){
+    for(int i=g->nlocal-1;i>=0;i--)
+        emitln(g,"altair_var_release(&%s_var);",g->local_vars[i]);
+}
 static int newtmp(CG *g){ return g->tmp++; }
 static char *cg_int_expr(CG *g, char *e){
     int t=newtmp(g);
     char *r=cg_fmt("({ AltairVal *_ie%d=%s; int _iv%d=(int)_ie%d->num; altair_val_free(_ie%d); _iv%d; })",t,e,t,t,t,t);
     free(e);
     return r;
+}
+
+static char *cg_owned_binary(CG *g, char *l, char *r,
+                             const char *fn, int line, int with_line){
+    int t=newtmp(g);
+    if(with_line){
+        return cg_fmt("({ AltairVal *_bl%d=%s; AltairVal *_br%d=%s; "
+                      "AltairVal *_bo%d=%s(_bl%d,_br%d,%d); "
+                      "altair_val_free(_bl%d); altair_val_free(_br%d); _bo%d; })",
+                      t,l,t,r,t,fn,t,t,line,t,t,t);
+    }
+    return cg_fmt("({ AltairVal *_bl%d=%s; AltairVal *_br%d=%s; "
+                  "AltairVal *_bo%d=%s(_bl%d,_br%d); "
+                  "altair_val_free(_bl%d); altair_val_free(_br%d); _bo%d; })",
+                  t,l,t,r,t,fn,t,t,t,t,t);
+}
+static char *cg_owned_unary(CG *g, char *e, const char *fn,
+                            int line, int with_line){
+    int t=newtmp(g);
+    if(with_line){
+        return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *_uo%d=%s(_ue%d,%d); "
+                      "altair_val_free(_ue%d); _uo%d; })",
+                      t,e,t,fn,t,line,t,t);
+    }
+    return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *_uo%d=%s(_ue%d); "
+                  "altair_val_free(_ue%d); _uo%d; })",
+                  t,e,t,fn,t,t,t);
+}
+
+typedef struct {
+    char names[256][128];
+    int  n;
+    char fun_names[64][128];
+    ASTNode *fun_nodes[64];
+    int  nf;
+} FastNumCtx;
+
+static int fast_num_has(const FastNumCtx *ctx, const char *name){
+    for(int i=0;i<ctx->n;i++) if(strcmp(ctx->names[i],name)==0) return 1;
+    return 0;
+}
+static ASTNode *fast_num_fun(const FastNumCtx *ctx, const char *name){
+    for(int i=0;i<ctx->nf;i++)
+        if(strcmp(ctx->fun_names[i],name)==0) return ctx->fun_nodes[i];
+    return NULL;
+}
+
+static void fast_num_collect(ASTNode *n, FastNumCtx *ctx){
+    if(!n) return;
+    if(n->kind==ND_VAR_DECL && n->var_type==VTYPE_NUMERIC &&
+       (n->storage==STOR_AUTO || n->storage==STOR_RAM) &&
+       ctx->n<256 && !fast_num_has(ctx,n->var_name)){
+        strncpy(ctx->names[ctx->n++],n->var_name,127);
+    }
+    for(int i=0;i<n->nchildren;i++) fast_num_collect(n->children[i],ctx);
+    fast_num_collect(n->left,ctx); fast_num_collect(n->right,ctx);
+    fast_num_collect(n->count_expr,ctx); fast_num_collect(n->body,ctx);
+}
+
+static int fast_num_expr_ok(ASTNode *n, const FastNumCtx *ctx){
+    if(!n) return 0;
+    switch(n->kind){
+    case ND_NUMBER: return 1;
+    case ND_IDENT: return fast_num_has(ctx,n->str_val);
+    case ND_BINOP:
+        return fast_num_expr_ok(n->left,ctx) && fast_num_expr_ok(n->right,ctx);
+    case ND_UNOP:
+        return fast_num_expr_ok(n->right,ctx);
+    case ND_FUNC_CALL: {
+        ASTNode *fun=fast_num_fun(ctx,n->fun_name);
+        if(!fun) return 0;
+        if(fun->nparam!=n->nchildren) return 0;
+        for(int i=0;i<n->nchildren;i++)
+            if(!fast_num_expr_ok(n->children[i],ctx)) return 0;
+        return 1;
+    }
+    default: return 0;
+    }
+}
+
+static int fast_num_stmt_ok(ASTNode *n, const FastNumCtx *ctx){
+    if(!n) return 1;
+    switch(n->kind){
+    case ND_BLOCK:
+        for(int i=0;i<n->nchildren;i++) if(!fast_num_stmt_ok(n->children[i],ctx)) return 0;
+        return 1;
+    case ND_FUN_DECL:
+        return fast_num_fun(ctx,n->fun_name)==n;
+    case ND_VAR_DECL:
+        return n->var_type==VTYPE_NUMERIC &&
+               (n->storage==STOR_AUTO || n->storage==STOR_RAM) &&
+               (n->nchildren==0 || fast_num_expr_ok(n->children[0],ctx));
+    case ND_ASSIGN:
+        return n->left && n->left->kind==ND_IDENT &&
+               fast_num_has(ctx,n->left->str_val) &&
+               fast_num_expr_ok(n->right,ctx);
+    case ND_COMPOUND_ASSIGN:
+        return n->var_name[0] && fast_num_has(ctx,n->var_name) &&
+               fast_num_expr_ok(n->right,ctx);
+    case ND_WHILE:
+        return fast_num_expr_ok(n->count_expr,ctx) && fast_num_stmt_ok(n->body,ctx);
+    case ND_REPEAT:
+        return fast_num_expr_ok(n->count_expr,ctx) && fast_num_stmt_ok(n->body,ctx);
+    case ND_IF:
+        if(!fast_num_expr_ok(n->children[0],ctx) ||
+           !fast_num_stmt_ok(n->children[1],ctx)) return 0;
+        {
+            int idx=2;
+            for(int i=0;i<n->nelif;i++){
+                if(!fast_num_expr_ok(n->children[idx++],ctx) ||
+                   !fast_num_stmt_ok(n->children[idx++],ctx)) return 0;
+            }
+            return !n->has_else || fast_num_stmt_ok(n->children[idx],ctx);
+        }
+    case ND_LOG:
+        return n->nchildren>0 && fast_num_expr_ok(n->children[0],ctx);
+    case ND_RETURN:
+        return n->nchildren>0 && fast_num_expr_ok(n->children[0],ctx);
+    case ND_EXPR_STMT:
+        return n->nchildren>0 && fast_num_expr_ok(n->children[0],ctx);
+    default:
+        return 0;
+    }
+}
+
+static int fast_num_fun_ok(ASTNode *fun, const FastNumCtx *all){
+    if(!fun || fun->nparam>16) return 0;
+    FastNumCtx local={0};
+    for(int i=0;i<fun->nparam;i++){
+        if(fun->param_types[i]!=VTYPE_NUMERIC) return 0;
+        if(local.n<256) strncpy(local.names[local.n++],fun->param_names[i],127);
+    }
+    fast_num_collect(fun->fun_body,&local);
+    local.nf=all->nf;
+    for(int i=0;i<all->nf;i++){
+        strncpy(local.fun_names[i],all->fun_names[i],127);
+        local.fun_nodes[i]=all->fun_nodes[i];
+    }
+    return fast_num_stmt_ok(fun->fun_body,&local);
+}
+
+static int fast_num_program_ok(ASTNode *body, FastNumCtx *ctx){
+    if(!body) return 0;
+    fast_num_collect(body,ctx);
+    for(int i=0;i<body->nchildren;i++){
+        ASTNode *s=body->children[i];
+        if(s && s->kind==ND_FUN_DECL && ctx->nf<64){
+            strncpy(ctx->fun_names[ctx->nf],s->fun_name,127);
+            ctx->fun_nodes[ctx->nf++]=s;
+        }
+    }
+    for(int i=0;i<ctx->nf;i++) if(!fast_num_fun_ok(ctx->fun_nodes[i],ctx)) return 0;
+    if(ctx->n==0 && ctx->nf==0) return 0;
+    return fast_num_stmt_ok(body,ctx);
+}
+
+static int g_fast_int=0;
+
+static int int_safe_expr(ASTNode *n){
+    if(!n) return 1;
+    switch(n->kind){
+    case ND_NUMBER:
+        return n->num_val == (double)(long long)n->num_val;
+    case ND_IDENT:
+        return 1;
+    case ND_BINOP:
+        if(n->op==TOK_SLASH) return 0;
+        return int_safe_expr(n->left) && int_safe_expr(n->right);
+    case ND_UNOP:
+        return int_safe_expr(n->right);
+    case ND_FUNC_CALL:
+        for(int i=0;i<n->nchildren;i++) if(!int_safe_expr(n->children[i])) return 0;
+        return 1;
+    default: return 0;
+    }
+}
+
+static int int_safe_stmt(ASTNode *n){
+    if(!n) return 1;
+    switch(n->kind){
+    case ND_BLOCK:
+        for(int i=0;i<n->nchildren;i++) if(!int_safe_stmt(n->children[i])) return 0;
+        return 1;
+    case ND_FUN_DECL:
+        return 1;
+    case ND_VAR_DECL:
+        return n->nchildren==0 || int_safe_expr(n->children[0]);
+    case ND_ASSIGN:
+        return int_safe_expr(n->right);
+    case ND_COMPOUND_ASSIGN:
+        if(n->compound_op==TOK_SLASH_ASSIGN) return 0;
+        return int_safe_expr(n->right);
+    case ND_WHILE:
+    case ND_REPEAT:
+        return int_safe_expr(n->count_expr) && int_safe_stmt(n->body);
+    case ND_IF: {
+        if(!int_safe_expr(n->children[0]) || !int_safe_stmt(n->children[1])) return 0;
+        int idx=2;
+        for(int i=0;i<n->nelif;i++){
+            if(!int_safe_expr(n->children[idx++]) || !int_safe_stmt(n->children[idx++])) return 0;
+        }
+        return !n->has_else || int_safe_stmt(n->children[idx]);
+    }
+    case ND_LOG:
+    case ND_RETURN:
+    case ND_EXPR_STMT:
+        return n->nchildren>0 && int_safe_expr(n->children[0]);
+    default:
+        return 1;
+    }
+}
+
+static int fast_int_program_ok(ASTNode *body, FastNumCtx *ctx){
+    if(!int_safe_stmt(body)) return 0;
+    for(int i=0;i<ctx->nf;i++)
+        if(!int_safe_stmt(ctx->fun_nodes[i]->fun_body)) return 0;
+    return 1;
+}
+
+static char *fast_num_name(const char *name){
+    return cg_fmt("_alt_fast_%s",name);
+}
+
+static FastNumCtx *fast_num_emit_ctx;
+
+static char *fast_num_expr(ASTNode *n){
+    if(!n) return strdup(g_fast_int ? "0" : "0.0");
+    switch(n->kind){
+    case ND_NUMBER:
+        if(g_fast_int) return cg_fmt("%lld",(long long)n->num_val);
+        return cg_fmt("%.17g",n->num_val);
+    case ND_IDENT: return fast_num_name(n->str_val);
+    case ND_UNOP: {
+        char *e=fast_num_expr(n->right), *r;
+        if(n->op==TOK_BANG) r=cg_fmt("(!((%s)!=0))",e);
+        else if(n->op==TOK_TILDE)
+            r=g_fast_int ? cg_fmt("(~(%s))",e) : cg_fmt("(double)(~(long long)(%s))",e);
+        else r=cg_fmt("(-(%s))",e);
+        free(e); return r;
+    }
+    case ND_BINOP: {
+        char *l=fast_num_expr(n->left), *r=fast_num_expr(n->right), *out;
+        const char *op=NULL;
+        switch(n->op){
+        case TOK_PLUS: op="+"; break; case TOK_MINUS: op="-"; break;
+        case TOK_STAR: op="*"; break; case TOK_SLASH: op="/"; break;
+        case TOK_EQ: op="=="; break; case TOK_NEQ: op="!="; break;
+        case TOK_LT: op="<"; break; case TOK_GT: op=">"; break;
+        case TOK_LTE: op="<="; break; case TOK_GTE: op=">="; break;
+        case TOK_AND: op="&&"; break; case TOK_OR: op="||"; break;
+        default: break;
+        }
+        if(op) out=cg_fmt("((%s)%s(%s))",l,op,r);
+        else if(n->op==TOK_PERCENT||n->op==TOK_PERCENT_LIT)
+            out=g_fast_int ? cg_fmt("((%s)%%(%s))",l,r) : cg_fmt("fmod((%s),(%s))",l,r);
+        else if(n->op==TOK_AMP)
+            out=g_fast_int ? cg_fmt("((%s)&(%s))",l,r) : cg_fmt("(double)((long long)(%s)&(long long)(%s))",l,r);
+        else if(n->op==TOK_PIPE)
+            out=g_fast_int ? cg_fmt("((%s)|(%s))",l,r) : cg_fmt("(double)((long long)(%s)|(long long)(%s))",l,r);
+        else if(n->op==TOK_CARET)
+            out=g_fast_int ? cg_fmt("((%s)^(%s))",l,r) : cg_fmt("(double)((long long)(%s)^(long long)(%s))",l,r);
+        else if(n->op==TOK_SHL)
+            out=g_fast_int ? cg_fmt("((%s)<<(%s))",l,r) : cg_fmt("(double)((long long)(%s)<<(long long)(%s))",l,r);
+        else if(n->op==TOK_SHR)
+            out=g_fast_int ? cg_fmt("((%s)>>(%s))",l,r) : cg_fmt("(double)((long long)(%s)>>(long long)(%s))",l,r);
+        else out=strdup(g_fast_int ? "0" : "0.0");
+        free(l); free(r); return out;
+    }
+    case ND_FUNC_CALL: {
+        char args[2048]="";
+        for(int i=0;i<n->nchildren;i++){
+            char *e=fast_num_expr(n->children[i]);
+            if(i>0) strncat(args,",",sizeof(args)-strlen(args)-1);
+            strncat(args,e,sizeof(args)-strlen(args)-1);
+            free(e);
+        }
+        return cg_fmt("_alt_fast_fn_%s(%s)",n->fun_name,args);
+    }
+    default: return strdup(g_fast_int ? "0" : "0.0");
+    }
+}
+
+static void fast_num_stmt(CG *g, ASTNode *n){
+    if(!n) return;
+    switch(n->kind){
+    case ND_BLOCK:
+        for(int i=0;i<n->nchildren;i++) fast_num_stmt(g,n->children[i]);
+        break;
+    case ND_VAR_DECL: {
+        char *name=fast_num_name(n->var_name);
+        char *e=n->nchildren ? fast_num_expr(n->children[0]) : strdup(g_fast_int ? "0" : "0.0");
+        emitln(g,"alt_fastnum_t %s = %s;",name,e);
+        free(name); free(e); break;
+    }
+    case ND_ASSIGN: {
+        char *name=fast_num_name(n->left->str_val), *e=fast_num_expr(n->right);
+        emitln(g,"%s = %s;",name,e);
+        free(name); free(e); break;
+    }
+    case ND_COMPOUND_ASSIGN: {
+        char *name=fast_num_name(n->var_name), *e=fast_num_expr(n->right);
+        const char *op="+=";
+        if(n->compound_op==TOK_MINUS_ASSIGN) op="-=";
+        else if(n->compound_op==TOK_STAR_ASSIGN) op="*=";
+        else if(n->compound_op==TOK_SLASH_ASSIGN) op="/=";
+        else if(n->compound_op==TOK_PERCENT_ASSIGN) op="fmod";
+        if(strcmp(op,"fmod")==0){
+            if(g_fast_int) emitln(g,"%s=((%s)%%(%s));",name,name,e);
+            else emitln(g,"%s=fmod(%s,%s);",name,name,e);
+        }
+        else emitln(g,"%s %s %s;",name,op,e);
+        free(name); free(e); break;
+    }
+    case ND_WHILE: {
+        char *e=fast_num_expr(n->count_expr);
+        emitln(g,"while(%s){",e); free(e); g->indent++;
+        fast_num_stmt(g,n->body); g->indent--; emitln(g,"}");
+        break;
+    }
+    case ND_REPEAT: {
+        char *e=fast_num_expr(n->count_expr);
+        int t=newtmp(g);
+        emitln(g,"for(long long _alt_repeat%d=0; _alt_repeat%d<(long long)(%s); ++_alt_repeat%d){",t,t,e,t);
+        free(e); g->indent++; fast_num_stmt(g,n->body); g->indent--; emitln(g,"}");
+        break;
+    }
+    case ND_IF: {
+        int idx=0; char *e=fast_num_expr(n->children[idx++]);
+        emitln(g,"if(%s){",e); free(e); g->indent++;
+        fast_num_stmt(g,n->children[idx++]); g->indent--;
+        for(int i=0;i<n->nelif;i++){
+            e=fast_num_expr(n->children[idx++]);
+            emitln(g,"} else if(%s){",e); free(e); g->indent++;
+            fast_num_stmt(g,n->children[idx++]); g->indent--;
+        }
+        if(n->has_else){ emitln(g,"} else {"); g->indent++; fast_num_stmt(g,n->children[idx]); g->indent--; }
+        emitln(g,"}"); break;
+    }
+    case ND_LOG: {
+        char *e=fast_num_expr(n->children[0]);
+        emitln(g,"{ AltairVal *_fast_log=altair_num(%s); altair_log(_fast_log); altair_val_free(_fast_log); }",e);
+        free(e); break;
+    }
+    case ND_RETURN: {
+        char *e=fast_num_expr(n->children[0]);
+        emitln(g,"return %s;",e); free(e); break;
+    }
+    case ND_EXPR_STMT: {
+        char *e=fast_num_expr(n->children[0]);
+        emitln(g,"(void)(%s);",e); free(e); break;
+    }
+    case ND_FUN_DECL:
+        break;
+    default: break;
+    }
+}
+
+static void fast_num_fun_emit(CG *g, ASTNode *n, FastNumCtx *ctx){
+    fprintf(g->fp,"static alt_fastnum_t _alt_fast_fn_%s(",n->fun_name);
+    for(int i=0;i<n->nparam;i++){
+        if(i>0) fprintf(g->fp,",");
+        fprintf(g->fp,"alt_fastnum_t %s",fast_num_name(n->param_names[i]));
+    }
+    fprintf(g->fp,"){\n");
+    int saved_indent=g->indent;
+    g->indent=1;
+    FastNumCtx local={0};
+    for(int i=0;i<n->nparam;i++) strncpy(local.names[local.n++],n->param_names[i],127);
+    fast_num_collect(n->fun_body,&local);
+    local.nf=ctx->nf;
+    for(int i=0;i<ctx->nf;i++){
+        strncpy(local.fun_names[i],ctx->fun_names[i],127);
+        local.fun_nodes[i]=ctx->fun_nodes[i];
+    }
+    FastNumCtx *saved_ctx=fast_num_emit_ctx;
+    fast_num_emit_ctx=&local;
+    fast_num_stmt(g,n->fun_body);
+    fast_num_emit_ctx=saved_ctx;
+    emitln(g,"return 0;");
+    g->indent=saved_indent;
+    fprintf(g->fp,"}\n\n");
 }
 static int is_known_class(CG *g,const char *name){
     for(int i=0;i<g->nknown;i++) if(strcmp(g->known_classes[i],name)==0) return 1;
@@ -280,10 +681,21 @@ static char *cg_expr_receiver(CG *g, ASTNode *n){
     return cg_expr(g,n);
 }
 
+static char *cg_obj_ref_nocopy(CG *g, ASTNode *n){
+    if(n->kind==ND_IDENT){
+        const char *name=n->str_val;
+        if(g->in_method && is_field(g,name))
+            return cg_fmt("altair_obj_get(_self,\"%s\",%d)->obj",name,n->line);
+        if(g->in_fun && !is_local_var(g,name) && !is_catch_id(g,name))
+            return cg_fmt("altair_var_get(altair_var_lookup(\"%s\"))",name);
+        return cg_fmt("altair_var_get(%s_var)",name);
+    }
+    return NULL;
+}
 static char *cg_expr(CG *g, ASTNode *n){
     if(!n) return strdup("altair_num(0.0)");
     switch(n->kind){
-    case ND_NUMBER: return cg_fmt("altair_num(%g)", n->num_val);
+    case ND_NUMBER: return cg_fmt("altair_num(%.17g)", n->num_val);
     case ND_STRING: {
         char *esc=c_escape(n->str_val);
         char *r=cg_fmt("altair_str(\"%s\")",esc); free(esc); return r;
@@ -311,26 +723,26 @@ static char *cg_expr(CG *g, ASTNode *n){
         char *res;
 
         switch(n->op){
-        case TOK_PLUS:  res=cg_fmt("altair_add(%s,%s,%d)",l,r,n->line); break;
-        case TOK_MINUS: res=cg_fmt("altair_sub(%s,%s,%d)",l,r,n->line); break;
-        case TOK_STAR:  res=cg_fmt("altair_mul(%s,%s,%d)",l,r,n->line); break;
-        case TOK_SLASH: res=cg_fmt("altair_div(%s,%s,%d)",l,r,n->line); break;
+        case TOK_PLUS:  res=cg_owned_binary(g,l,r,"altair_add",n->line,1); break;
+        case TOK_MINUS: res=cg_owned_binary(g,l,r,"altair_sub",n->line,1); break;
+        case TOK_STAR:  res=cg_owned_binary(g,l,r,"altair_mul",n->line,1); break;
+        case TOK_SLASH: res=cg_owned_binary(g,l,r,"altair_div",n->line,1); break;
         case TOK_PERCENT_LIT:
-        case TOK_PERCENT:res=cg_fmt("altair_mod(%s,%s,%d)",l,r,n->line); break;
-        case TOK_EQ:    res=cg_fmt("altair_eq(%s,%s)",l,r); break;
-        case TOK_NEQ:   res=cg_fmt("altair_neq(%s,%s)",l,r); break;
-        case TOK_LT:    res=cg_fmt("altair_lt(%s,%s,%d)",l,r,n->line); break;
-        case TOK_GT:    res=cg_fmt("altair_gt(%s,%s,%d)",l,r,n->line); break;
-        case TOK_LTE:   res=cg_fmt("altair_lte(%s,%s,%d)",l,r,n->line); break;
-        case TOK_GTE:   res=cg_fmt("altair_gte(%s,%s,%d)",l,r,n->line); break;
-        case TOK_AND:   res=cg_fmt("altair_and(%s,%s)",l,r); break;
-        case TOK_OR:    res=cg_fmt("altair_or(%s,%s)",l,r); break;
+        case TOK_PERCENT:res=cg_owned_binary(g,l,r,"altair_mod",n->line,1); break;
+        case TOK_EQ:    res=cg_owned_binary(g,l,r,"altair_eq",n->line,0); break;
+        case TOK_NEQ:   res=cg_owned_binary(g,l,r,"altair_neq",n->line,0); break;
+        case TOK_LT:    res=cg_owned_binary(g,l,r,"altair_lt",n->line,1); break;
+        case TOK_GT:    res=cg_owned_binary(g,l,r,"altair_gt",n->line,1); break;
+        case TOK_LTE:   res=cg_owned_binary(g,l,r,"altair_lte",n->line,1); break;
+        case TOK_GTE:   res=cg_owned_binary(g,l,r,"altair_gte",n->line,1); break;
+        case TOK_AND:   res=cg_owned_binary(g,l,r,"altair_and",n->line,0); break;
+        case TOK_OR:    res=cg_owned_binary(g,l,r,"altair_or",n->line,0); break;
 
-        case TOK_AMP:   res=cg_fmt("altair_band(%s,%s,%d)",l,r,n->line); break;
-        case TOK_PIPE:  res=cg_fmt("altair_bor(%s,%s,%d)",l,r,n->line); break;
-        case TOK_CARET: res=cg_fmt("altair_bxor(%s,%s,%d)",l,r,n->line); break;
-        case TOK_SHL:   res=cg_fmt("altair_shl(%s,%s,%d)",l,r,n->line); break;
-        case TOK_SHR:   res=cg_fmt("altair_shr(%s,%s,%d)",l,r,n->line); break;
+        case TOK_AMP:   res=cg_owned_binary(g,l,r,"altair_band",n->line,1); break;
+        case TOK_PIPE:  res=cg_owned_binary(g,l,r,"altair_bor",n->line,1); break;
+        case TOK_CARET: res=cg_owned_binary(g,l,r,"altair_bxor",n->line,1); break;
+        case TOK_SHL:   res=cg_owned_binary(g,l,r,"altair_shl",n->line,1); break;
+        case TOK_SHR:   res=cg_owned_binary(g,l,r,"altair_shr",n->line,1); break;
 
         default:        res=strdup("altair_num(0.0)"); break;
         }
@@ -340,9 +752,9 @@ static char *cg_expr(CG *g, ASTNode *n){
     case ND_UNOP: {
         char *e=cg_expr(g,n->right);
         char *res;
-        if(n->op==TOK_BANG) res=cg_fmt("altair_not(%s)",e);
-        else if(n->op==TOK_TILDE) res=cg_fmt("altair_bnot(%s,%d)",e,n->line);
-        else res=cg_fmt("altair_neg(%s)",e);
+        if(n->op==TOK_BANG) res=cg_owned_unary(g,e,"altair_not",n->line,0);
+        else if(n->op==TOK_TILDE) res=cg_owned_unary(g,e,"altair_bnot",n->line,1);
+        else res=cg_owned_unary(g,e,"altair_neg",n->line,0);
         free(e); return res;
     }
 
@@ -467,8 +879,9 @@ static char *cg_expr(CG *g, ASTNode *n){
             char *r=cg_fmt("altair_num(altair_list_length(%s))",obj);
             free(obj); return r;
         }
-        char *r=cg_fmt("altair_val_copy(altair_obj_get((%s)->type==ALT_OBJECT?(%s)->obj:NULL,\"%s\",%d))",
-                       obj,obj,n->str_val,n->line);
+        int t=newtmp(g);
+        char *r=cg_fmt("({ AltairVal *_mv%d=%s; AltairVal *_mr%d=altair_val_copy(altair_obj_get(_mv%d->type==ALT_OBJECT?_mv%d->obj:NULL,\"%s\",%d)); altair_val_free(_mv%d); _mr%d; })",
+                       t,obj,t,t,t,n->str_val,n->line,t,t);
         free(obj); return r;
     }
 
@@ -518,7 +931,9 @@ static char *cg_expr(CG *g, ASTNode *n){
 
 static void cg_block(CG *g, ASTNode *blk){
     if(!blk) return;
+    if(g->in_fun) scope_push(g);
     for(int i=0;i<blk->nchildren;i++) cg_stmt(g,blk->children[i]);
+    if(g->in_fun) scope_pop_release(g);
 }
 
 static void cg_stmt(CG *g, ASTNode *n){
@@ -570,11 +985,12 @@ static void cg_stmt(CG *g, ASTNode *n){
         if(n->var_type==VTYPE_TOKEN)
             record_token_var(g,vname);
 
+        int persistable = (n->storage==STOR_DISK || n->storage==STOR_CACHE);
         if(n->nchildren>0){
             ASTNode *init=n->children[0];
+            if(persistable) emitln(g,"if(!altair_var_get(%s_var)){",vname);
             if(n->var_type==VTYPE_TOKEN){
                 char *e=cg_expr(g,init);
-
                 emitln(g,"altair_var_set_own(%s_var, altair_token_new(%s));",vname,e);
                 free(e);
             } else {
@@ -585,11 +1001,11 @@ static void cg_stmt(CG *g, ASTNode *n){
                     emitln(g,"{ AltairVal *_cn%d=altair_coerce_num(%s,%d); altair_var_set_own(%s_var,_cn%d); }",
                            g->tmp,e,n->line,vname,g->tmp); g->tmp++;
                 } else {
-
                     emitln(g,"altair_var_set_own(%s_var, %s);",vname,e);
                 }
                 free(e);
             }
+            if(persistable) emitln(g,"}");
         }
         if(n->storage==STOR_DISK||n->storage==STOR_CACHE){
             emitln(g,"if(!altair_var_get(%s_var)) altair_var_set_own(%s_var,altair_num(0.0));",
@@ -634,11 +1050,19 @@ static void cg_stmt(CG *g, ASTNode *n){
                 free(e);
             }
         } else if(n->left && n->left->kind==ND_MEMBER_ACCESS){
-            char *obj=cg_expr(g,n->left->left);
             char *val=cg_expr(g,n->right);
-            emitln(g,"{ AltairVal *_mo%d=%s; altair_obj_set((%s)->type==ALT_OBJECT?(%s)->obj:NULL,\"%s\",_mo%d,%d); altair_val_free(_mo%d); }",
-                   g->tmp,val,obj,obj,n->left->str_val,g->tmp,n->line,g->tmp); g->tmp++;
-            free(obj); free(val);
+            char *live=cg_obj_ref_nocopy(g,n->left->left);
+            if(live){
+                emitln(g,"{ AltairVal *_mo%d=%s; altair_obj_set(%s->type==ALT_OBJECT?%s->obj:NULL,\"%s\",_mo%d,%d); altair_val_free(_mo%d); }",
+                       g->tmp,val,live,live,n->left->str_val,g->tmp,n->line,g->tmp); g->tmp++;
+                free(live);
+            } else {
+                char *obj=cg_expr(g,n->left->left);
+                emitln(g,"{ AltairVal *_mo%d=%s; AltairVal *_mv%d=%s; altair_obj_set(_mv%d->type==ALT_OBJECT?_mv%d->obj:NULL,\"%s\",_mo%d,%d); altair_val_free(_mv%d); altair_val_free(_mo%d); }",
+                       g->tmp,val,g->tmp,obj,g->tmp,g->tmp,n->left->str_val,g->tmp,n->line,g->tmp,g->tmp); g->tmp++;
+                free(obj);
+            }
+            free(val);
         } else {
             char *l=cg_expr(g,n->left);
             char *r=cg_expr(g,n->right);
@@ -721,7 +1145,9 @@ static void cg_stmt(CG *g, ASTNode *n){
         emitln(g,"{ /* if */");
         g->indent++;
         emitln(g,"AltairVal *_if%d=%s;",t,cond); free(cond);
-        emitln(g,"if(_if%d&&((_if%d->type==ALT_BOOL&&_if%d->boolean)||(_if%d->type==ALT_NUMERIC&&_if%d->num!=0))){",t,t,t,t,t);
+        emitln(g,"int _ifb%d=(_if%d&&((_if%d->type==ALT_BOOL&&_if%d->boolean)||(_if%d->type==ALT_NUMERIC&&_if%d->num!=0)));",t,t,t,t,t,t);
+        emitln(g,"altair_val_free(_if%d);",t);
+        emitln(g,"if(_ifb%d){",t);
         g->indent++;
         cg_block(g,n->children[idx++]);
         g->indent--;
@@ -729,7 +1155,9 @@ static void cg_stmt(CG *g, ASTNode *n){
             char *ec=cg_expr(g,n->children[idx++]);
             int te=newtmp(g);
             emitln(g,"} else { AltairVal *_elif%d=%s;",te,ec); free(ec);
-            emitln(g,"if(_elif%d&&((_elif%d->type==ALT_BOOL&&_elif%d->boolean)||(_elif%d->type==ALT_NUMERIC&&_elif%d->num!=0))){",te,te,te,te,te);
+            emitln(g,"int _elifb%d=(_elif%d&&((_elif%d->type==ALT_BOOL&&_elif%d->boolean)||(_elif%d->type==ALT_NUMERIC&&_elif%d->num!=0)));",te,te,te,te,te,te);
+            emitln(g,"altair_val_free(_elif%d);",te);
+            emitln(g,"if(_elifb%d){",te);
             g->indent++;
             cg_block(g,n->children[idx++]);
             g->indent--;
@@ -747,7 +1175,7 @@ static void cg_stmt(CG *g, ASTNode *n){
     }
 
     case ND_WHILE: {
-        g->loop_depth++;
+        g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
         int t=newtmp(g);
         emitln(g,"while(1){ /* while */");
         g->indent++;
@@ -763,7 +1191,7 @@ static void cg_stmt(CG *g, ASTNode *n){
     }
 
     case ND_REPEAT: {
-        g->loop_depth++;
+        g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
         int t=newtmp(g);
         char *cnt=cg_expr(g,n->count_expr);
         emitln(g,"{ AltairVal *_r%d=%s; long long _ri%d=0;",t,cnt,t); free(cnt);
@@ -781,7 +1209,7 @@ static void cg_stmt(CG *g, ASTNode *n){
     }
 
     case ND_FOREVER: {
-        g->loop_depth++;
+        g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
         emitln(g,"while(1){ /* forever */");
         g->indent++;
         cg_block(g,n->body);
@@ -792,7 +1220,7 @@ static void cg_stmt(CG *g, ASTNode *n){
     }
 
     case ND_FOREACH: {
-        g->loop_depth++;
+        g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
         int t=newtmp(g);
         int owns_fl=1;
         char *lst;
@@ -817,6 +1245,7 @@ static void cg_stmt(CG *g, ASTNode *n){
         emitln(g,"AltairVar *%s_var=altair_var_new(\"%s\",ALT_TEXT,ALT_RAM,0,0,0.0);",
                n->iter_var,n->iter_var);
         if(g->in_fun) push_local(g, n->iter_var);
+        if(g->loop_depth>0) g->loop_scope_mark[g->loop_depth-1]=g->nlocal;
         emitln(g,"for(int _fi%d=0;_fi%d<_flen%d;_fi%d++){",t,t,t,t);
         g->indent++;
         emitln(g,"altair_var_set(%s_var,altair_list_get(_fl%d,_fi%d,%d));",
@@ -834,9 +1263,14 @@ static void cg_stmt(CG *g, ASTNode *n){
     }
 
     case ND_EXIT: {
-        if(g->loop_depth > 0)
+        if(g->loop_depth > 0){
+            if(g->in_fun){
+                int mark=g->loop_scope_mark[g->loop_depth-1];
+                for(int i=g->nlocal-1;i>=mark;i--)
+                    emitln(g,"altair_var_release(&%s_var);",g->local_vars[i]);
+            }
             emitln(g,"break;");
-        else
+        } else
             emitln(g,"{ altair_shutdown(); exit(0); }");
         break;
     }
@@ -849,8 +1283,16 @@ static void cg_stmt(CG *g, ASTNode *n){
     case ND_RETURN: {
         if(n->nchildren>0){
             char *e=cg_expr(g,n->children[0]);
-            emitln(g,"return %s;",e); free(e);
+            if(g->in_fun){
+                int t=newtmp(g);
+                emitln(g,"AltairVal *_ret%d=%s;",t,e); free(e);
+                emit_release_open_scopes(g);
+                emitln(g,"return _ret%d;",t);
+            } else {
+                emitln(g,"return %s;",e); free(e);
+            }
         } else {
+            if(g->in_fun) emit_release_open_scopes(g);
             emitln(g,"return NULL;");
         }
         break;
@@ -1107,7 +1549,7 @@ static void cg_stmt(CG *g, ASTNode *n){
 
         if(!g->use_raylib){
 
-            g->loop_depth++;
+            g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
             emitln(g,"while(1) {");
             g->indent++;
             cg_block(g,n->body);
@@ -1116,7 +1558,7 @@ static void cg_stmt(CG *g, ASTNode *n){
             g->loop_depth--;
             break;
         }
-        g->loop_depth++;
+        g->loop_scope_mark[g->loop_depth]=g->nlocal; g->loop_depth++;
         emitln(g,"while(!WindowShouldClose()) {");
         g->indent++;
         emitln(g,"BeginDrawing();");
@@ -1390,8 +1832,9 @@ static void cg_route_handler(CG *g, ASTNode *n){
     g->indent=1;
     int saved_in_fun=g->in_fun; g->in_fun=1;
     int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
     cg_block(g,n->body);
-    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
     g->indent=0;
     fprintf(g->fp,"}\n\n");
 }
@@ -1404,8 +1847,9 @@ static void cg_middleware_handler(CG *g, ASTNode *n){
     g->indent=1;
     int saved_in_fun=g->in_fun; g->in_fun=1;
     int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
     cg_block(g,n->body);
-    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
     g->indent=0;
     fprintf(g->fp,"    return 1; /* continue chain */\n}\n\n");
 }
@@ -1417,8 +1861,9 @@ static void cg_job_handler(CG *g, ASTNode *n){
     g->indent=1;
     int saved_in_fun=g->in_fun; g->in_fun=1;
     int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
     cg_block(g,n->body);
-    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
     g->indent=0;
     fprintf(g->fp,"}\n\n");
 }
@@ -1430,8 +1875,9 @@ static void cg_shutdown_handler(CG *g, ASTNode *n){
     g->indent=1;
     int saved_in_fun=g->in_fun; g->in_fun=1;
     int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
     cg_block(g,n->body);
-    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
     g->indent=0;
     fprintf(g->fp,"}\n\n");
 }
@@ -1502,19 +1948,30 @@ static void cg_class(CG *g, ASTNode *n){
         g->indent=1;
         int saved_in_fun=g->in_fun; g->in_fun=1;
         int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
+        int saved_ncfp=g->n_cur_fun_params;
+        char saved_cfp[16][128];
+        memcpy(saved_cfp, g->cur_fun_params, sizeof(saved_cfp));
+        g->n_cur_fun_params=0;
 
         for(int pi=0;pi<mth->nparam;pi++){
             emitln(g,"AltairVar *%s_var=altair_var_new(\"%s\",%s,ALT_RAM,0,0,0.0);",
                    mth->param_names[pi],mth->param_names[pi],vtype_c(mth->param_types[pi]));
             emitln(g,"altair_var_set(%s_var,_p_%s);",mth->param_names[pi],mth->param_names[pi]);
             push_local(g, mth->param_names[pi]);
+            if(g->n_cur_fun_params<16){
+                strncpy(g->cur_fun_params[g->n_cur_fun_params], mth->param_names[pi], 127);
+                g->n_cur_fun_params++;
+            }
         }
         cg_block(g,mth->fun_body);
 
         for(int pi=0;pi<mth->nparam;pi++)
             emitln(g,"altair_var_release(&%s_var);",mth->param_names[pi]);
         emitln(g,"return NULL;");
-        g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+        g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
+        g->n_cur_fun_params=saved_ncfp;
+        memcpy(g->cur_fun_params, saved_cfp, sizeof(saved_cfp));
         g->indent=0;
         fprintf(g->fp,"}\n\n");
     }
@@ -1537,19 +1994,30 @@ static void cg_fun(CG *g, ASTNode *n){
     g->indent=1;
     int saved_in_fun=g->in_fun; g->in_fun=1;
     int saved_nlocal=g->nlocal; g->nlocal=0;
+    int saved_scope_depth=g->scope_depth; g->scope_depth=0;
+    int saved_ncfp=g->n_cur_fun_params;
+    char saved_cfp[16][128];
+    memcpy(saved_cfp, g->cur_fun_params, sizeof(saved_cfp));
+    g->n_cur_fun_params=0;
 
     for(int i=0;i<n->nparam;i++){
         emitln(g,"AltairVar *%s_var=altair_var_new(\"%s\",%s,ALT_RAM,0,0,0.0);",
                n->param_names[i],n->param_names[i],vtype_c(n->param_types[i]));
         emitln(g,"altair_var_set(%s_var,_p_%s);",n->param_names[i],n->param_names[i]);
         push_local(g, n->param_names[i]);
+        if(g->n_cur_fun_params<16){
+            strncpy(g->cur_fun_params[g->n_cur_fun_params], n->param_names[i], 127);
+            g->n_cur_fun_params++;
+        }
     }
     cg_block(g,n->fun_body);
 
     for(int i=0;i<n->nparam;i++)
         emitln(g,"altair_var_release(&%s_var);",n->param_names[i]);
     emitln(g,"return altair_num(0.0);");
-    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal;
+    g->in_fun=saved_in_fun; g->nlocal=saved_nlocal; g->scope_depth=saved_scope_depth;
+    g->n_cur_fun_params=saved_ncfp;
+    memcpy(g->cur_fun_params, saved_cfp, sizeof(saved_cfp));
     g->indent=0;
     fprintf(g->fp,"}\n\n");
 }
@@ -1629,6 +2097,12 @@ void codegen_emit(ASTNode *program, FILE *fp,
                 strncpy(g.known_funs[g.nknown_funs++],s->fun_name,127);
         }
     }
+    FastNumCtx fast_ctx={0};
+    int fast_numeric=fast_num_program_ok(body,&fast_ctx);
+    g_fast_int = fast_numeric && fast_int_program_ok(body,&fast_ctx);
+    if(fast_numeric){
+        fprintf(fp,"typedef %s alt_fastnum_t;\n", g_fast_int ? "long long" : "double");
+    }
 
     fprintf(fp,"/* ===== Forward declarations ===== */\n");
     if(body){
@@ -1648,13 +2122,22 @@ void codegen_emit(ASTNode *program, FILE *fp,
                 }
             }
             if(s->kind==ND_FUN_DECL){
-                fprintf(fp,"AltairVal *");
-                fprintf(fp," _fn_%s(",s->fun_name);
-                for(int pi=0;pi<s->nparam;pi++){
-                    if(pi>0) fprintf(fp,",");
-                    fprintf(fp,"AltairVal *_p_%s",s->param_names[pi]);
+                if(fast_numeric && fast_num_fun(&fast_ctx,s->fun_name)==s){
+                    fprintf(fp,"static alt_fastnum_t _alt_fast_fn_%s(",s->fun_name);
+                    for(int pi=0;pi<s->nparam;pi++){
+                        if(pi>0) fprintf(fp,",");
+                        fprintf(fp,"alt_fastnum_t %s",fast_num_name(s->param_names[pi]));
+                    }
+                    fprintf(fp,");\n");
+                } else {
+                    fprintf(fp,"AltairVal *");
+                    fprintf(fp," _fn_%s(",s->fun_name);
+                    for(int pi=0;pi<s->nparam;pi++){
+                        if(pi>0) fprintf(fp,",");
+                        fprintf(fp,"AltairVal *_p_%s",s->param_names[pi]);
+                    }
+                    fprintf(fp,");\n");
                 }
-                fprintf(fp,");\n");
             }
 
             if(s->kind==ND_ROUTE){
@@ -1697,7 +2180,12 @@ void codegen_emit(ASTNode *program, FILE *fp,
     if(body){
         for(int i=0;i<body->nchildren;i++){
             ASTNode *s=body->children[i];
-            if(s&&s->kind==ND_FUN_DECL) cg_fun(&g,s);
+            if(s&&s->kind==ND_FUN_DECL){
+                if(fast_numeric && fast_num_fun(&fast_ctx,s->fun_name)==s)
+                    fast_num_fun_emit(&g,s,&fast_ctx);
+                else
+                    cg_fun(&g,s);
+            }
         }
     }
 
@@ -1727,14 +2215,21 @@ void codegen_emit(ASTNode *program, FILE *fp,
         emitln(&g,"InitAudioDevice();");
 
     if(body){
-        for(int i=0;i<body->nchildren;i++){
-            ASTNode *s=body->children[i];
-            if(!s) continue;
-            if(s->kind==ND_CLASS_DECL||s->kind==ND_FUN_DECL||
-               s->kind==ND_ROUTE||s->kind==ND_MIDDLEWARE||
-               s->kind==ND_JOB||s->kind==ND_ON_SHUTDOWN||
-               s->kind==ND_LINK ) continue;
-            cg_stmt(&g,s);
+        if(fast_numeric){
+            FastNumCtx *saved_fast_ctx=fast_num_emit_ctx;
+            fast_num_emit_ctx=&fast_ctx;
+            fast_num_stmt(&g,body);
+            fast_num_emit_ctx=saved_fast_ctx;
+        } else {
+            for(int i=0;i<body->nchildren;i++){
+                ASTNode *s=body->children[i];
+                if(!s) continue;
+                if(s->kind==ND_CLASS_DECL||s->kind==ND_FUN_DECL||
+                   s->kind==ND_ROUTE||s->kind==ND_MIDDLEWARE||
+                   s->kind==ND_JOB||s->kind==ND_ON_SHUTDOWN||
+                   s->kind==ND_LINK ) continue;
+                cg_stmt(&g,s);
+            }
         }
     }
 
@@ -1749,4 +2244,3 @@ void codegen_emit(ASTNode *program, FILE *fp,
     emitln(&g,"return 0;");
     fprintf(fp,"}\n");
 }
-

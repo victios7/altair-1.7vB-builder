@@ -382,23 +382,28 @@ char *altair_val_tostr(const AltairVal *v) {
 }
 
 void altair_var_register(AltairVar *v) {
-    v->next = g_var_head; g_var_head = v;
+    v->prev = NULL;
+    v->next = g_var_head;
+    if (g_var_head) g_var_head->prev = v;
+    g_var_head = v;
+
     unsigned h = var_hash(v->name);
+    v->hprev = NULL;
     v->hnext = g_var_hash[h];
+    if (g_var_hash[h]) g_var_hash[h]->hprev = v;
     g_var_hash[h] = v;
 }
 void altair_var_unregister(const char *name) {
     unsigned h = var_hash(name);
-    AltairVar **hp = &g_var_hash[h];
-    while (*hp) {
-        if (strcmp((*hp)->name, name)==0) { *hp=(*hp)->hnext; break; }
-        hp = &(*hp)->hnext;
-    }
-    AltairVar **pp = &g_var_head;
-    while (*pp) {
-        if (strcmp((*pp)->name, name)==0) { *pp=(*pp)->next; return; }
-        pp = &(*pp)->next;
-    }
+    AltairVar *v = g_var_hash[h];
+    while (v && strcmp(v->name, name)!=0) v = v->hnext;
+    if (!v) return;
+
+    if (v->hprev) v->hprev->hnext = v->hnext; else g_var_hash[h] = v->hnext;
+    if (v->hnext) v->hnext->hprev = v->hprev;
+
+    if (v->prev) v->prev->next = v->next; else g_var_head = v->next;
+    if (v->next) v->next->prev = v->prev;
 }
 AltairVar *altair_var_lookup(const char *name) {
     unsigned h = var_hash(name);
@@ -1570,11 +1575,6 @@ void altair_jobs_tick(void) {
     }
 }
 
-/* =====================================================================
- * Self-hosting support: bitwise operators, file system access,
- * external process execution and raw pointers.
- * ===================================================================== */
-
 static long long altair_as_int(AltairVal *v) {
     if (!v) return 0;
     if (v->type==ALT_NUMERIC) return (long long)v->num;
@@ -1628,6 +1628,49 @@ AltairVal *altair_new_ptr(void *p) {
     AltairVal *v=(AltairVal*)malloc(sizeof(AltairVal));
     v->type=ALT_POINTER; v->ptr=p;
     return v;
+}
+
+#define ALT_PTR_TABLE_BUCKETS 512
+typedef struct AltPtrEntry {
+    void *base;
+    size_t size;
+    struct AltPtrEntry *next;
+} AltPtrEntry;
+static AltPtrEntry *g_ptr_table[ALT_PTR_TABLE_BUCKETS];
+
+static unsigned alt_ptr_hash(const void *p) {
+    uintptr_t h = (uintptr_t)p;
+    h ^= h >> 15;
+    h *= 2654435761u;
+    return (unsigned)(h & (ALT_PTR_TABLE_BUCKETS - 1));
+}
+static void alt_ptr_register(void *p, size_t size) {
+    unsigned h = alt_ptr_hash(p);
+    AltPtrEntry *e = (AltPtrEntry*)malloc(sizeof(AltPtrEntry));
+    e->base = p; e->size = size; e->next = g_ptr_table[h];
+    g_ptr_table[h] = e;
+}
+static size_t alt_ptr_valid_size(void *p) {
+    if (!p) return 0;
+    unsigned h = alt_ptr_hash(p);
+    for (AltPtrEntry *e=g_ptr_table[h]; e; e=e->next)
+        if (e->base==p) return e->size;
+    return 0;
+}
+static int alt_ptr_release(void *p) {
+    if (!p) return 0;
+    unsigned h = alt_ptr_hash(p);
+    AltPtrEntry **pp = &g_ptr_table[h];
+    while (*pp) {
+        if ((*pp)->base==p) {
+            AltPtrEntry *dead=*pp;
+            *pp = dead->next;
+            free(dead);
+            return 1;
+        }
+        pp = &(*pp)->next;
+    }
+    return 0;
 }
 
 static const char *altair_storage_path(const char *rel) {
@@ -1758,20 +1801,24 @@ AltairVal *_fn_ptr_alloc(AltairVal *size) {
     long long n = size ? altair_as_int(size) : 0;
     if (n<=0) n=1;
     void *p=calloc((size_t)n,1);
+    if (!p) altair_throw("ALT0017","Pointer allocation failed.",0);
+    alt_ptr_register(p,(size_t)n);
     return altair_new_ptr(p);
 }
 AltairVal *_fn_ptr_free(AltairVal *p) {
-    if (p && p->type==ALT_POINTER && p->ptr) {
-        free(p->ptr);
-        p->ptr=NULL;
+    if (!p || p->type!=ALT_POINTER || !p->ptr) return altair_bool(0);
+    if (!alt_ptr_release(p->ptr)) {
+        altair_throw("ALT0018","Double free or invalid pointer.",0);
+        return altair_bool(0);
     }
+    free(p->ptr);
+    p->ptr=NULL;
     return altair_bool(1);
 }
 AltairVal *_fn_ptr_is_null(AltairVal *p) {
-    return altair_bool(!p || p->type!=ALT_POINTER || p->ptr==NULL);
+    return altair_bool(!p || p->type!=ALT_POINTER || p->ptr==NULL || alt_ptr_valid_size(p->ptr)==0);
 }
 
-/* --- Self-hosting support: CLI arguments --- */
 static int    _alt_argc = 0;
 static char **_alt_argv = NULL;
 void altair_set_args(int argc, char **argv) { _alt_argc=argc; _alt_argv=argv; }
@@ -1786,7 +1833,6 @@ AltairVal *_fn_length(AltairVal *v) {
     return altair_num((double)altair_list_length(v));
 }
 
-/* --- Self-hosting support: named persistent variables (variables/ folder) --- */
 typedef struct { char file[256]; AltairVar *v; } AltPersistEntry;
 static AltPersistEntry _alt_persist_reg[256];
 static int _alt_persist_n = 0;
@@ -1850,36 +1896,46 @@ static void altair_persist_save_all(void) {
 AltairVal *_fn_alloc(AltairVal *size) {
     long long n = size ? altair_as_int(size) : 0;
     if (n<=0) n=8;
-    void *raw = calloc(1, sizeof(size_t)+(size_t)n);
-    *(size_t*)raw = (size_t)n;
-    return altair_new_ptr((char*)raw+sizeof(size_t));
+    void *raw = calloc(1,(size_t)n);
+    if (!raw) { altair_throw("ALT0017","Pointer allocation failed.",0); return altair_new_ptr(NULL); }
+    alt_ptr_register(raw,(size_t)n);
+    return altair_new_ptr(raw);
 }
 AltairVal *_fn_p_bytes(AltairVal *p) {
     if (!p||p->type!=ALT_POINTER||!p->ptr) return altair_num(0);
-    size_t n=*(size_t*)((char*)p->ptr-sizeof(size_t));
+    size_t n=alt_ptr_valid_size(p->ptr);
+    if (n==0) { altair_throw("ALT0018","Use of freed or invalid pointer.",0); return altair_num(0); }
     return altair_num((double)n);
 }
 AltairVal *_fn_p_null(AltairVal *p) {
-    return altair_bool(!p||p->type!=ALT_POINTER||p->ptr==NULL);
+    return altair_bool(!p||p->type!=ALT_POINTER||p->ptr==NULL||alt_ptr_valid_size(p->ptr)==0);
 }
 AltairVal *_fn_p_free(AltairVal *p) {
-    if (p&&p->type==ALT_POINTER&&p->ptr) { free((char*)p->ptr-sizeof(size_t)); p->ptr=NULL; }
+    if (!p||p->type!=ALT_POINTER||!p->ptr) return altair_bool(0);
+    if (!alt_ptr_release(p->ptr)) {
+        altair_throw("ALT0018","Double free or invalid pointer.",0);
+        return altair_bool(0);
+    }
+    free(p->ptr);
+    p->ptr=NULL;
     return altair_bool(1);
 }
 AltairVal *_fn_p_write(AltairVal *p, AltairVal *offset, AltairVal *val) {
     if (!p||p->type!=ALT_POINTER||!p->ptr) return altair_bool(0);
-    size_t n=*(size_t*)((char*)p->ptr-sizeof(size_t));
+    size_t n=alt_ptr_valid_size(p->ptr);
+    if (n==0) { altair_throw("ALT0018","Use of freed or invalid pointer.",0); return altair_bool(0); }
     long long off = offset?altair_as_int(offset):0;
-    if (off<0 || (size_t)((off+1)*8)>n) return altair_bool(0);
+    if (off<0 || (size_t)((off+1)*8)>n) { altair_throw("ALT0019","Pointer write out of bounds.",0); return altair_bool(0); }
     double v = (val&&val->type==ALT_NUMERIC) ? val->num : 0.0;
     ((double*)p->ptr)[off]=v;
     return altair_bool(1);
 }
 AltairVal *_fn_p_read(AltairVal *p, AltairVal *offset) {
     if (!p||p->type!=ALT_POINTER||!p->ptr) return altair_num(0);
-    size_t n=*(size_t*)((char*)p->ptr-sizeof(size_t));
+    size_t n=alt_ptr_valid_size(p->ptr);
+    if (n==0) { altair_throw("ALT0018","Use of freed or invalid pointer.",0); return altair_num(0); }
     long long off = offset?altair_as_int(offset):0;
-    if (off<0 || (size_t)((off+1)*8)>n) return altair_num(0);
+    if (off<0 || (size_t)((off+1)*8)>n) { altair_throw("ALT0019","Pointer read out of bounds.",0); return altair_num(0); }
     return altair_num(((double*)p->ptr)[off]);
 }
 
