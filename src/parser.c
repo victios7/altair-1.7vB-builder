@@ -100,7 +100,7 @@ static ASTNode *parse_postfix(Parser *p, ASTNode *base){
         if(check(p,TOK_DOT)){
             advance(p);
             if(!is_ident_like(p)&&!check(p,TOK_RESPOND)){
-                fprintf(stderr,"[ALT0003] Expected field/method name after '.' at line %d\n",line);
+                fprintf(stderr, "[ALT0003] Syntax error at line %d: Expected field or method name after '.', but found '%s'.\n", line, p->cur.value);
                 exit(1);
             }
             char member[128]; strncpy(member,p->cur.value,127); advance(p);

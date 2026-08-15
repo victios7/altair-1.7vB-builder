@@ -14,6 +14,108 @@
 #include <setjmp.h>
 #include <ctype.h>
 
+/*--------------------------------------------------------------
+ * Fast Numeric List (AltairFNumList)
+ * --------------------------------------------------------------
+ * Optimized list for numeric values (int/double).
+ *--------------------------------------------------------------*/
+#ifndef DISABLE_FAST_LIST
+
+typedef struct {
+    double *items;
+    int     len;
+    int     cap;
+} AltairFNumList;
+
+AltairFNumList *altair_fnumlist_new(void) {
+    AltairFNumList *list = (AltairFNumList*)malloc(sizeof(AltairFNumList));
+    list->items = NULL;
+    list->len = 0;
+    list->cap = 0;
+    return list;
+}
+
+void altair_fnumlist_free(AltairFNumList *list) {
+    if (!list) return;
+    free(list->items);
+    free(list);
+}
+
+void altair_fnumlist_append(AltairFNumList *list, double value) {
+    if (!list) return;
+    if (list->len >= list->cap) {
+        int new_cap = list->cap ? list->cap * 2 : 8;
+        list->items = (double*)realloc(list->items, sizeof(double) * new_cap);
+        list->cap = new_cap;
+    }
+    list->items[list->len++] = value;
+}
+
+AltairVal *altair_fnumlist_to_val(AltairFNumList *list) {
+    if (!list) return altair_list_new();
+    AltairVal *val = altair_list_new();
+    for (int i = 0; i < list->len; i++) {
+        altair_list_append(val, altair_num(list->items[i]));
+    }
+    return val;
+}
+
+/*--------------------------------------------------------------
+ * String Builder (AltairSB)
+ * --------------------------------------------------------------
+ * Efficient string concatenation.
+ *--------------------------------------------------------------*/
+#ifndef DISABLE_SB
+
+typedef struct {
+    char   *buf;
+    size_t  len;
+    size_t  cap;
+} AltairSB;
+
+AltairSB *altair_sb_new(void) {
+    AltairSB *sb = (AltairSB*)malloc(sizeof(AltairSB));
+    sb->buf = NULL;
+    sb->len = 0;
+    sb->cap = 0;
+    return sb;
+}
+
+void altair_sb_free(AltairSB *sb) {
+    if (!sb) return;
+    free(sb->buf);
+    free(sb);
+}
+
+void altair_sb_append(AltairSB *sb, const char *str) {
+    if (!sb || !str) return;
+    size_t str_len = strlen(str);
+    if (sb->len + str_len >= sb->cap) {
+        size_t new_cap = sb->cap ? sb->cap * 2 : 64;
+        while (new_cap < sb->len + str_len + 1) new_cap *= 2;
+        sb->buf = (char*)realloc(sb->buf, new_cap);
+        sb->cap = new_cap;
+    }
+    memcpy(sb->buf + sb->len, str, str_len);
+    sb->len += str_len;
+    sb->buf[sb->len] = '\0';
+}
+
+void altair_sb_append_val(AltairSB *sb, AltairVal *val) {
+    if (!sb || !val) return;
+    char *str = altair_val_tostr(val);
+    altair_sb_append(sb, str);
+    free(str);
+}
+
+AltairVal *altair_sb_to_val(AltairSB *sb) {
+    if (!sb) return altair_str("");
+    return altair_str_own(strdup(sb->buf));
+}
+
+#endif  // DISABLE_SB
+#endif  // DISABLE_FAST_LIST
+
 static void altair_persist_save_all(void);
 
 #ifdef __linux__
@@ -626,6 +728,33 @@ void altair_list_set(AltairVal *list, int idx, AltairVal *val, int line) {
     list->list.items[idx] = altair_val_copy(val);
 }
 
+#ifndef DISABLE_SB
+AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
+    if (!a || !b) return altair_num(0);
+    if (a->type == ALT_TEXT || b->type == ALT_TEXT) {
+        AltairSB *sb = altair_sb_new();
+        char *sa = altair_val_tostr(a);
+        char *sb_str = altair_val_tostr(b);
+        altair_sb_append(sb, sa);
+        altair_sb_append(sb, sb_str);
+        free(sa); free(sb_str);
+        AltairVal *result = altair_sb_to_val(sb);
+        altair_sb_free(sb);
+        return result;
+    }
+    if (a->type == ALT_NUMERIC && b->type == ALT_NUMERIC)
+        return altair_num(a->num + b->num);
+
+    if (a->type == ALT_LIST && b->type == ALT_LIST) {
+        AltairVal *r = altair_list_new();
+        for (int i = 0; i < a->list.len; i++) altair_list_append(r, a->list.items[i]);
+        for (int i = 0; i < b->list.len; i++) altair_list_append(r, b->list.items[i]);
+        return r;
+    }
+    altair_throw("ALT0002", "Cannot add values of incompatible types.", line);
+    return altair_num(0);
+}
+#else
 AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
     if (!a||!b) return altair_num(0);
     if (a->type==ALT_TEXT || b->type==ALT_TEXT) {
@@ -651,6 +780,7 @@ AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
     altair_throw("ALT0002","Cannot add values of incompatible types.",line);
     return altair_num(0);
 }
+#endif
 
 AltairVal *altair_sub(AltairVal *a, AltairVal *b, int line) {
     if (!a||!b) return altair_num(0);
