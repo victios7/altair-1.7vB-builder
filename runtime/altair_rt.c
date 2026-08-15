@@ -14,6 +14,7 @@
 #include <setjmp.h>
 #include <ctype.h>
 
+#ifndef DISABLE_FNUMLIST
 /* Fast Numeric List */
 typedef struct {
     double *items;
@@ -53,7 +54,9 @@ AltairVal *altair_fnumlist_to_val(AltairFNumList *list) {
     }
     return val;
 }
+#endif  // DISABLE_FNUMLIST
 
+#ifndef DISABLE_SB
 /* String Builder */
 typedef struct {
     char   *buf;
@@ -100,6 +103,7 @@ AltairVal *altair_sb_to_val(AltairSB *sb) {
     if (!sb) return altair_str("");
     return altair_str_own(strdup(sb->buf));
 }
+#endif  // DISABLE_SB
 
 static void altair_persist_save_all(void);
 
@@ -723,6 +727,7 @@ void altair_list_set(AltairVal *list, int idx, AltairVal *val, int line) {
     list->list.items[idx] = altair_val_copy(val);
 }
 
+#ifndef DISABLE_SB
 AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
     if (!a||!b) return altair_num(0);
     if (a->type==ALT_TEXT || b->type==ALT_TEXT) {
@@ -748,6 +753,33 @@ AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
     altair_throw("ALT0002","Cannot add values of incompatible types.",line);
     return altair_num(0);
 }
+#else
+AltairVal *altair_add(AltairVal *a, AltairVal *b, int line) {
+    if (!a||!b) return altair_num(0);
+    if (a->type==ALT_TEXT || b->type==ALT_TEXT) {
+        char *sa = altair_val_tostr(a);
+        char *sb_str = altair_val_tostr(b);
+        size_t la=strlen(sa), lb=strlen(sb_str);
+        char  *r = (char*)malloc(la+lb+1);
+        memcpy(r, sa, la);
+        memcpy(r+la, sb_str, lb);
+        r[la+lb] = '\0';
+        free(sa); free(sb_str);
+        return altair_str_own(r);
+    }
+    if (a->type==ALT_NUMERIC && b->type==ALT_NUMERIC)
+        return altair_num(a->num + b->num);
+
+    if (a->type==ALT_LIST && b->type==ALT_LIST) {
+        AltairVal *r = altair_list_new();
+        for (int i=0;i<a->list.len;i++) altair_list_append(r,a->list.items[i]);
+        for (int i=0;i<b->list.len;i++) altair_list_append(r,b->list.items[i]);
+        return r;
+    }
+    altair_throw("ALT0002","Cannot add values of incompatible types.",line);
+    return altair_num(0);
+}
+#endif
 
 AltairVal *altair_sub(AltairVal *a, AltairVal *b, int line) {
     if (!a||!b) return altair_num(0);
