@@ -1125,7 +1125,7 @@ AltairVal *altair_system(const char *key) {
 }
 
 AltairVal *altair_compiler(const char *key) {
-    if(strcmp(key,"version")==0)      return altair_str("1.7.5vB");
+    if(strcmp(key,"version")==0)      return altair_str("1.8");
     if(strcmp(key,"name")==0)         return altair_str("altairc");
     if(strcmp(key,"build")==0)        return altair_str(__DATE__);
     if(strcmp(key,"architecture")==0){
@@ -1295,7 +1295,7 @@ static void parse_request(int fd, AltairRequest *req) {
 static void send_response(int fd, AltairResponse *res) {
     char header[1024];
     int hl=snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\nX-Powered-By: Altair/1.7.5vB\r\n\r\n",
+        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\nX-Powered-By: Altair/1.8\r\n\r\n",
         res->status,
         res->status==200?"OK":res->status==201?"Created":res->status==401?"Unauthorized":
         res->status==404?"Not Found":res->status==429?"Too Many Requests":"Error",

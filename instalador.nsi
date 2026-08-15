@@ -2,7 +2,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !define APPNAME    "Altair"
-!define APPVERSION "1.7.5vB"
+!define APPVERSION "1.8"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Altair"
 
 Name "Altair Language ${APPVERSION}"
@@ -49,7 +49,7 @@ Section "Altair Compiler"
     File "mingw64.zip"
     DetailPrint "Instalando compilador C, esto puede tardar varios minutos..."
     ExecWait 'powershell -NoProfile -Command "Expand-Archive -Path \"$INSTDIR\mingw64.zip\" -DestinationPath \"$INSTDIR\" -Force"' $0
-    Delete "$INSTDIR\mingw64.zip"
+    Delete /REBOOTOK "$INSTDIR\mingw64.zip"
     
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
     

@@ -45,6 +45,84 @@ static void resolve_windows_paths(void){
     else
         strcpy(s_gcc, "gcc");
 }
+#else
+static char s_rt_h[1024];
+static char s_rt_c[1024];
+
+static int file_exists(const char *p){
+    struct stat st;
+    return stat(p, &st) == 0;
+}
+
+static void resolve_unix_paths(const char *argv0){
+    char exe_dir[900] = {0};
+    int have_dir = 0;
+
+#if defined(__linux__)
+    char linkbuf[1024];
+    ssize_t n = readlink("/proc/self/exe", linkbuf, sizeof(linkbuf)-1);
+    if(n > 0){
+        linkbuf[n] = '\0';
+        char *slash = strrchr(linkbuf, '/');
+        if(slash){
+            int dl = (int)(slash - linkbuf);
+            if(dl < (int)sizeof(exe_dir)){
+                memcpy(exe_dir, linkbuf, dl);
+                exe_dir[dl] = '\0';
+                have_dir = 1;
+            }
+        }
+    }
+#endif
+    if(!have_dir && argv0){
+        char resolved[1024];
+        if(realpath(argv0, resolved)){
+            char *slash = strrchr(resolved, '/');
+            if(slash){
+                int dl = (int)(slash - resolved);
+                if(dl < (int)sizeof(exe_dir)){
+                    memcpy(exe_dir, resolved, dl);
+                    exe_dir[dl] = '\0';
+                    have_dir = 1;
+                }
+            }
+        }
+    }
+
+    if(have_dir){
+        char cand_h[1024], cand_c[1024];
+        snprintf(cand_h, sizeof(cand_h), "%s/runtime/altair_rt.h", exe_dir);
+        snprintf(cand_c, sizeof(cand_c), "%s/runtime/altair_rt.c", exe_dir);
+        if(file_exists(cand_h) && file_exists(cand_c)){
+            snprintf(s_rt_h, sizeof(s_rt_h), "%s", cand_h);
+            snprintf(s_rt_c, sizeof(s_rt_c), "%s", cand_c);
+            return;
+        }
+        snprintf(cand_h, sizeof(cand_h), "%s/../share/altair/runtime/altair_rt.h", exe_dir);
+        snprintf(cand_c, sizeof(cand_c), "%s/../share/altair/runtime/altair_rt.c", exe_dir);
+        if(file_exists(cand_h) && file_exists(cand_c)){
+            snprintf(s_rt_h, sizeof(s_rt_h), "%s", cand_h);
+            snprintf(s_rt_c, sizeof(s_rt_c), "%s", cand_c);
+            return;
+        }
+    }
+
+    if(file_exists("/usr/share/altair/runtime/altair_rt.h") &&
+       file_exists("/usr/share/altair/runtime/altair_rt.c")){
+        snprintf(s_rt_h, sizeof(s_rt_h), "/usr/share/altair/runtime/altair_rt.h");
+        snprintf(s_rt_c, sizeof(s_rt_c), "/usr/share/altair/runtime/altair_rt.c");
+        return;
+    }
+
+    if(file_exists("runtime/altair_rt.h") && file_exists("runtime/altair_rt.c")){
+        snprintf(s_rt_h, sizeof(s_rt_h), "runtime/altair_rt.h");
+        snprintf(s_rt_c, sizeof(s_rt_c), "runtime/altair_rt.c");
+        return;
+    }
+
+    snprintf(s_rt_h, sizeof(s_rt_h), "%s", ALTAIR_RT_H);
+    snprintf(s_rt_c, sizeof(s_rt_c), "%s", ALTAIR_RT_C);
+}
 #endif
 
 static char *read_file(const char *path){
@@ -59,7 +137,7 @@ static char *read_file(const char *path){
 
 static void print_usage(void){
     fprintf(stderr,
-        "Altair Compiler v1.7.5vB\n\n"
+        "Altair Compiler v1.8\n\n"
         "Usage:\n"
         "  altairc <source.at> [options]\n"
         "  altairc guide              Write ALTAIR_GUIDE.md to current directory\n"
@@ -151,8 +229,9 @@ int main(int argc, char **argv){
     const char *gcc_bin = s_gcc;
     const char *guide_path = s_guide;
 #else
-    const char *rt_h    = ALTAIR_RT_H;
-    const char *rt_c    = ALTAIR_RT_C;
+    resolve_unix_paths(argv[0]);
+    const char *rt_h    = s_rt_h;
+    const char *rt_c    = s_rt_c;
     const char *gcc_bin = "gcc";
 
     char guide_path[1024] = "ALTAIR_GUIDE.md";
@@ -183,7 +262,7 @@ int main(int argc, char **argv){
     }
 
     if(strcmp(argv[1],"-v")==0||strcmp(argv[1],"--version")==0){
-        printf("altairc 1.7.5vB\n"); return 0;
+        printf("altairc 1.8\n"); return 0;
     }
     if(strcmp(argv[1],"-h")==0||strcmp(argv[1],"--help")==0){
         print_usage(); return 0;

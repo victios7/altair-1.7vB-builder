@@ -202,8 +202,24 @@ static void emitln(CG *g,const char *fmt,...){
     ind(g); va_list ap; va_start(ap,fmt); vfprintf(g->fp,fmt,ap); va_end(ap);
     fprintf(g->fp,"\n");
 }
+/*--------------------------------------------------------------
+ * Scopes
+ * --------------------------------------------------------------
+ * LEGACY_SCOPE   – mantiene el antiguo comportamiento (solo funciona
+ *                  dentro de funciones).  
+ * ENABLE_SCOPE   – abre un scope para cualquier bloque, lo que
+ *                  elimina la fuga de memoria global.
+ *--------------------------------------------------------------*/
+#ifndef LEGACY_SCOPE
+#define ENABLE_SCOPE 1
+#endif
+
 static void scope_push(CG *g){
-    if(g->scope_depth<64) g->scope_mark[g->scope_depth++]=g->nlocal;
+    #if defined(ENABLE_SCOPE)
+        if(g->scope_depth<64) g->scope_mark[g->scope_depth++]=g->nlocal;
+    #else
+        if(g->in_fun && g->scope_depth<64) g->scope_mark[g->scope_depth++]=g->nlocal;
+    #endif
 }
 static void scope_pop_release(CG *g){
     if(g->scope_depth<=0) return;
@@ -2065,7 +2081,7 @@ void codegen_emit(ASTNode *program, FILE *fp,
     fprintf(fp,"\n/* ===== End of Runtime ===== */\n\n");
 
     if(g.use_raylib){
-        fprintf(fp,"/* ===== Raylib (v1.7.5vB graphics) ===== */\n");
+        fprintf(fp,"/* ===== Raylib (v1.8 graphics) ===== */\n");
         fprintf(fp,"#include \"raylib.h\"\n\n");
     }
 
