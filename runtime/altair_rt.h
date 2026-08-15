@@ -91,6 +91,31 @@ typedef struct {
     int     active;
 } AltairError;
 
+/* Fast Numeric List */
+typedef struct {
+    double *items;
+    int     len;
+    int     cap;
+} AltairFNumList;
+
+AltairFNumList *altair_fnumlist_new(void);
+void altair_fnumlist_free(AltairFNumList *list);
+void altair_fnumlist_append(AltairFNumList *list, double value);
+AltairVal *altair_fnumlist_to_val(AltairFNumList *list);
+
+/* String Builder */
+typedef struct {
+    char   *buf;
+    size_t  len;
+    size_t  cap;
+} AltairSB;
+
+AltairSB *altair_sb_new(void);
+void altair_sb_free(AltairSB *sb);
+void altair_sb_append(AltairSB *sb, const char *str);
+void altair_sb_append_val(AltairSB *sb, AltairVal *val);
+AltairVal *altair_sb_to_val(AltairSB *sb);
+
 #define ALT_TRY_MAX 128
 extern jmp_buf     _altair_jmp_stack[ALT_TRY_MAX];
 extern AltairError _altair_err_stack[ALT_TRY_MAX];

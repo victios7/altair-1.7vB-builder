@@ -1,8 +1,8 @@
 # Altair Compiler v1.8 - Makefile
 CC      = gcc
-CFLAGS  = -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation \
-           -DALTAIR_RT_H=\"$(ALTAIR_RT_H)\" \
-           -DALTAIR_RT_C=\"$(ALTAIR_RT_C)\"
+CFLAGS  = -O3 -flto -fomit-frame-pointer -Wall -Wextra -std=c11 -Wno-unused-parameter -Wno-stringop-truncation -DENABLE_FNUMLIST -DENABLE_SB \
+           -DALTAIR_RT_H="$(ALTAIR_RT_H)" \
+           -DALTAIR_RT_C="$(ALTAIR_RT_C)"
 ALTAIR_RT_H = $(abspath runtime/altair_rt.h)
 ALTAIR_RT_C = $(abspath runtime/altair_rt.c)
 SRCS = src/main.c src/lexer.c src/ast.c src/parser.c src/sema.c src/codegen.c

@@ -46,10 +46,8 @@ typedef struct {
     char  persist_names[64][128];
     char  persist_files[64][256];
     int   npersist;
-
-    /* Temporaries tracking */
-    char  tmp_vars[256][128];
-    int   ntmp_vars;
+    char  global_vars[256][128];
+    int   nglobal_vars;
 } CG;
 
 static char *cg_fmt(const char *fmt,...);
@@ -225,19 +223,17 @@ static void scope_push(CG *g){
         if(g->in_fun && g->scope_depth<64) g->scope_mark[g->scope_depth++]=g->nlocal;
     #endif
 }
-static void tmp_release_all(CG *g) {
-    for (int i = 0; i < g->ntmp_vars; i++) {
-        emitln(g, "altair_val_free(%s);", g->tmp_vars[i]);
-    }
-    g->ntmp_vars = 0;
-}
-
 static void scope_pop_release(CG *g){
     if(g->scope_depth<=0) return;
     int mark=g->scope_mark[--g->scope_depth];
     for(int i=g->nlocal-1;i>=mark;i--)
         emitln(g,"altair_var_release(&%s_var);",g->local_vars[i]);
     g->nlocal=mark;
+}
+
+static void global_release_all(CG *g) {
+    for(int i=0;i<g->nglobal_vars;i++)
+        emitln(g,"altair_var_release(&%s_var);",g->global_vars[i]);
 }
 static void emit_release_open_scopes(CG *g){
     for(int i=g->nlocal-1;i>=0;i--)
@@ -253,37 +249,29 @@ static char *cg_int_expr(CG *g, char *e){
 
 static char *cg_owned_binary(CG *g, char *l, char *r,
                              const char *fn, int line, int with_line){
-    int t = newtmp(g);
-    char *tmp_name = cg_fmt("_tmp%d", t);
-    if (g->ntmp_vars < 256) {
-        strncpy(g->tmp_vars[g->ntmp_vars++], tmp_name, 127);
-    }
-    if (with_line) {
+    int t=newtmp(g);
+    if(with_line){
         return cg_fmt("({ AltairVal *_bl%d=%s; AltairVal *_br%d=%s; "
-                      "AltairVal *%s=%s(_bl%d,_br%d,%d); "
-                      "altair_val_free(_bl%d); altair_val_free(_br%d); %s; })",
-                      t, l, t, r, tmp_name, fn, t, t, line, t, t, tmp_name);
+                      "AltairVal *_bo%d=%s(_bl%d,_br%d,%d); "
+                      "altair_val_free(_bl%d); altair_val_free(_br%d); _bo%d; })",
+                      t,l,t,r,t,fn,t,t,line,t,t,t);
     }
     return cg_fmt("({ AltairVal *_bl%d=%s; AltairVal *_br%d=%s; "
-                  "AltairVal *%s=%s(_bl%d,_br%d); "
-                  "altair_val_free(_bl%d); altair_val_free(_br%d); %s; })",
-                  t, l, t, r, tmp_name, fn, t, t, t, t, tmp_name);
+                  "AltairVal *_bo%d=%s(_bl%d,_br%d); "
+                  "altair_val_free(_bl%d); altair_val_free(_br%d); _bo%d; })",
+                  t,l,t,r,t,fn,t,t,t,t,t);
 }
 static char *cg_owned_unary(CG *g, char *e, const char *fn,
                             int line, int with_line){
-    int t = newtmp(g);
-    char *tmp_name = cg_fmt("_tmp%d", t);
-    if (g->ntmp_vars < 256) {
-        strncpy(g->tmp_vars[g->ntmp_vars++], tmp_name, 127);
+    int t=newtmp(g);
+    if(with_line){
+        return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *_uo%d=%s(_ue%d,%d); "
+                      "altair_val_free(_ue%d); _uo%d; })",
+                      t,e,t,fn,t,line,t,t);
     }
-    if (with_line) {
-        return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *%s=%s(_ue%d,%d); "
-                      "altair_val_free(_ue%d); %s; })",
-                      t, e, tmp_name, fn, t, line, t, tmp_name);
-    }
-    return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *%s=%s(_ue%d); "
-                  "altair_val_free(_ue%d); %s; })",
-                  t, e, tmp_name, fn, t, t, tmp_name);
+    return cg_fmt("({ AltairVal *_ue%d=%s; AltairVal *_uo%d=%s(_ue%d); "
+                  "altair_val_free(_ue%d); _uo%d; })",
+                  t,e,t,fn,t,t,t);
 }
 
 typedef struct {
@@ -794,14 +782,29 @@ static char *cg_expr(CG *g, ASTNode *n){
     }
 
     case ND_LIST_LIT: {
-        int t=newtmp(g);
-        emitln(g,"AltairVal *_lst%d = altair_list_new();",t);
+        int is_fnum = 1;
         for(int i=0;i<n->nchildren;i++){
-            char *e=cg_expr(g,n->children[i]);
-            emitln(g,"{ AltairVal *_li%d_%d=%s; altair_list_append(_lst%d,_li%d_%d); altair_val_free(_li%d_%d); }",t,i,e,t,t,i,t,i);
-            free(e);
+            if(n->children[i]->kind != ND_NUMBER) { is_fnum = 0; break; }
         }
-        return cg_fmt("_lst%d",t);
+        if(is_fnum) {
+            int t=newtmp(g);
+            emitln(g,"AltairFNumList *_flist%d = altair_fnumlist_new();",t);
+            for(int i=0;i<n->nchildren;i++){
+                emitln(g,"altair_fnumlist_append(_flist%d, %.17g);",t,n->children[i]->num_val);
+            }
+            char *result = cg_fmt("altair_fnumlist_to_val(_flist%d)",t);
+            emitln(g,"altair_fnumlist_free(_flist%d);",t);
+            return result;
+        } else {
+            int t=newtmp(g);
+            emitln(g,"AltairVal *_lst%d = altair_list_new();",t);
+            for(int i=0;i<n->nchildren;i++){
+                char *e=cg_expr(g,n->children[i]);
+                emitln(g,"{ AltairVal *_li%d_%d=%s; altair_list_append(_lst%d,_li%d_%d); altair_val_free(_li%d_%d); }",t,i,e,t,t,i,t,i);
+                free(e);
+            }
+            return cg_fmt("_lst%d",t);
+        }
     }
 
     case ND_FUNC_CALL: {
@@ -984,6 +987,9 @@ static void cg_stmt(CG *g, ASTNode *n){
         const char *vt=vtype_c(n->var_type);
         int is_const=n->is_const;
         double esecs=n->expire_secs;
+        if (g->in_fun == 0 && g->nglobal_vars < 256) {
+            strncpy(g->global_vars[g->nglobal_vars++], vname, 127);
+        }
         int wt=n->weight;
 
         if(g->in_fun) push_local(g, vname);
@@ -2270,7 +2276,7 @@ void codegen_emit(ASTNode *program, FILE *fp,
 
     if(g.use_raylib && has_audio) emitln(&g,"CloseAudioDevice();");
     if(g.use_raylib) emitln(&g,"CloseWindow();");
-
+    global_release_all(&g);
     emitln(&g,"altair_shutdown();");
 #ifdef _WIN32
 
